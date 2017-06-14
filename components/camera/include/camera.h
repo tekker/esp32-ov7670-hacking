@@ -16,6 +16,7 @@
 
 #include "esp_err.h"
 #include "driver/ledc.h"
+#include "../sensor.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -30,6 +31,7 @@ typedef enum {
 
 typedef enum {
     CAMERA_FS_QQVGA = 4,     //!< 160x120
+    CAMERA_FS_QCIF = 6,      //!< 176x144
     CAMERA_FS_QVGA = 8,      //!< 320x240
     CAMERA_FS_VGA = 10,      //!< 640x480
     CAMERA_FS_SVGA = 11,     //!< 800x600
@@ -40,6 +42,7 @@ typedef enum {
     CAMERA_UNKNOWN = 1,
     CAMERA_OV7725 = 7725,
     CAMERA_OV2640 = 2640,
+    CAMERA_OV7670 = 7670,
 } camera_model_t;
 
 typedef struct {
@@ -148,6 +151,19 @@ esp_err_t camera_run();
  */
 void camera_print_fb();
 
+/**
+ * @brief get frame info string
+ *
+ */
+int get_image_info_str(char* outstr);
+
+
+esp_err_t reset_xclk(camera_config_t* config);
+esp_err_t reset_pixformat();
+sensor_t* get_cam_sensor();
+int cam_set_sensor_reg(uint8_t reg, uint8_t regVal);
+
+void set_test_modes(bool enableYuvTest, bool reverseBytes);
 
 #ifdef __cplusplus
 }

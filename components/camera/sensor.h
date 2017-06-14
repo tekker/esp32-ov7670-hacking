@@ -14,7 +14,7 @@
 #define OV9650_PID     (0x96)
 #define OV2640_PID     (0x26)
 #define OV7725_PID     (0x77)
-
+#define OV7670_PID     (0x76)
 
 typedef struct {
     uint8_t MIDH;
@@ -28,6 +28,8 @@ typedef enum {
     PIXFORMAT_YUV422,    // 2BPP/YUV422
     PIXFORMAT_GRAYSCALE, // 1BPP/GRAYSCALE
     PIXFORMAT_JPEG,      // JPEG/COMPRESSED
+    PIXFORMAT_RGB555,    //
+    PIXFORMAT_RGB444,    //
 } pixformat_t;
 
 typedef enum {

@@ -11,13 +11,13 @@ config WIFI_PASSWORD
     default ""
     help
         Password for your network.
-        
+
 config XCLK_FREQ
     int "XCLK Frequency"
-    default "20000000"
+    default "8000000"
     help
         The XCLK Frequency in Herz.
-        
+
 menu "Pin Configuration"
     config D0
         int "D0"
