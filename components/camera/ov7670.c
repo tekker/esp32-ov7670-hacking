@@ -198,6 +198,22 @@ static const uint8_t saturation_regs[NUM_SATURATION_LEVELS][2] = {
     {0x80, 0x80}, /* +4 */
 };
 
+static inline void I2CSet(uint8_t device, uint8_t reg, uint8_t mask, uint8_t value) {
+    // Perform a Read-Modify-Write
+    uint8_t content = SCCB_Read(device, reg);
+    content &= ~mask;
+    content |= value & mask;
+    SCCB_Write(device, reg, content);
+    //I2CWrite(device, reg, content);
+    // Validate content
+    uint8_t verify = SCCB_Read(device, reg);
+
+    if (verify != content) {
+      // register mismatch
+    }
+}
+
+
 static int reset(sensor_t *sensor)
 {
     int i=0;
@@ -231,6 +247,9 @@ static int set_pixformat(sensor_t *sensor, pixformat_t pixformat)
         case PIXFORMAT_RGB565:
             reg =  COM7_SET_FMT(reg, COM7_FMT_RGB);
 	          reg2 = COM15_SET_RGB565(reg2, 1);
+            // swap byte order for ILI9341 direct display
+            I2CSet(sensor->slv_addr, TSLB, (1 << 3), 0x00); // swap byte order LH -> HL
+
             break;
         case PIXFORMAT_YUV422:
         case PIXFORMAT_GRAYSCALE:
@@ -243,6 +262,7 @@ static int set_pixformat(sensor_t *sensor, pixformat_t pixformat)
     // Write back register COM7
     ret = SCCB_Write(sensor->slv_addr, COM7, reg);
     ret = reg | SCCB_Write(sensor->slv_addr, COM15, reg2);
+
 
     // Delay
     systick_sleep(30);
@@ -261,6 +281,7 @@ static int set_pixformat(sensor_t *sensor, pixformat_t pixformat)
       rv = SCCB_Write(sensor->slv_addr, YMTXS, MTXS_VALUE);
 
     }
+
 
     return ret;
 }
