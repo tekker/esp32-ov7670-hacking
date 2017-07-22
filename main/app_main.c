@@ -308,7 +308,7 @@ static bool PAUSE_DISPLAY=true;
 #include "smallargs.h"
 
 #define UNUSED(x) ((void)x)
-#define RESPONSE_BUFFER_LEN 128
+#define RESPONSE_BUFFER_LEN 256
 #define CMD_BUFFER_LEN 128
 
 static sarg_root root;
@@ -346,13 +346,17 @@ static int help_cb(const sarg_result *res)
     if(ret != SARG_ERR_SUCCESS)
         return ret;
 
-    int length = 0;
-    length += sprintf(telnet_cmd_response_buff+length, "%s\n", buf);
+    //int length = 0;
+    //length += sprintf(telnet_cmd_response_buff+length, "%s\n", buf);
 
-    ESP_LOGD(TAG," help_cb: %s",telnet_cmd_response_buff);
-    telnet_esp32_sendData((uint8_t *)telnet_cmd_response_buff, strlen(telnet_cmd_response_buff));
+
+//    ESP_LOGD(TAG," help_cb: %s",telnet_cmd_response_buff);
+//    telnet_esp32_sendData((uint8_t *)telnet_cmd_response_buff, strlen(telnet_cmd_response_buff));
+
+    telnet_esp32_sendData((uint8_t *)buf, strlen(buf));
 
     free(buf);
+    
     return 0;
 }
 
