@@ -252,10 +252,8 @@ esp_err_t camera_probe(const camera_config_t* config, camera_model_t* out_camera
 }
 
 int print_frame_data(char* outstr) {
-
   int cnt = 0;
-  char pf[12]; //* pf = new char[12];
-
+  char pf[12];
   switch(s_state->config.pixel_format) {
     case(PIXFORMAT_YUV422):
       sprintf(pf,"YUV422");
@@ -276,10 +274,8 @@ int print_frame_data(char* outstr) {
       sprintf(pf,"unknown");
       break;
   }
-
-  cnt += sprintf(outstr+cnt,"img_%dx%d_%dbpp_%s",s_state->width, s_state->height, s_state->fb_bytes_per_pixel,pf);
+  cnt += sprintf(outstr+cnt,"img_%dx%d_%dbpp_%s_%d",s_state->width, s_state->height, s_state->fb_bytes_per_pixel,pf,s_state->frame_count);
   return cnt;
-
 }
 
 int get_image_mime_info_str(char* outstr) {
@@ -368,14 +364,11 @@ esp_err_t camera_init(const camera_config_t* config)
     }
 
     if ((pix_format == PIXFORMAT_RGB565) || (pix_format == PIXFORMAT_YUV422)) {
-
       ESP_LOGD(TAG, "Sending Raw Bytes from DMA to Framebuffer at %d HZ",s_state->config.xclk_freq_hz);
-
       s_state->fb_size = s_state->width * s_state->height * 2;
       s_state->in_bytes_per_pixel = 2;       // camera sends YUV422 (2 bytes)
       s_state->fb_bytes_per_pixel = 2;       // frame buffer stores YUYV
       s_state->dma_filter = &dma_filter_raw;
-
       // TODO: Sampling mode testing - allow configuration..
       uint8_t highspeed_sampling_mode = 2;
 /*
@@ -383,7 +376,6 @@ esp_err_t camera_init(const camera_config_t* config)
         highspeed_sampling_mode = 2;
       } else highspeed_sampling_mode = 1;
 */
-
       if (highspeed_sampling_mode == 0) {
         ESP_LOGD(TAG, "Sampling mode SM_0A0B_0C0D (0)");
         s_state->sampling_mode = SM_0A0B_0C0D; // sampling mode for ov7670... works well for YUV
@@ -394,7 +386,6 @@ esp_err_t camera_init(const camera_config_t* config)
         ESP_LOGD(TAG, "Sampling mode SM_0A00_0B00 (2)");
         s_state->sampling_mode = SM_0A00_0B00; //highspeed
       }
-
     }
 /*
      else if (pix_format == PIXFORMAT_GRAYSCALE) {
@@ -414,8 +405,6 @@ esp_err_t camera_init(const camera_config_t* config)
         }
         s_state->in_bytes_per_pixel = 2;       // camera sends YUYV
         s_state->fb_bytes_per_pixel = 2;       // display needs 2bpp...
-
-
     } else if (pix_format == PIXFORMAT_JPEG) {
         if (s_state->sensor.id.PID != OV2640_PID) {
             ESP_LOGE(TAG, "JPEG format is only supported for ov2640");
@@ -449,8 +438,6 @@ esp_err_t camera_init(const camera_config_t* config)
         err = ESP_ERR_NOT_SUPPORTED;
         goto fail;
     }
-
-
 /*
     ESP_LOGD(TAG, "in_bpp: %d, fb_bpp: %d, fb_size: %d, mode: %d, width: %d height: %d",
             s_state->in_bytes_per_pixel, s_state->fb_bytes_per_pixel,
@@ -458,10 +445,9 @@ esp_err_t camera_init(const camera_config_t* config)
             s_state->width, s_state->height);
 */
 
-    ESP_LOGD(TAG, "Allocating frame buffer (%d bytes)", s_state->fb_size);
-    // TODO! TEKKER KLUDGE
+    ESP_LOGD(TAG, "Frame buffer (%d bytes)", s_state->fb_size);
     if (s_state->fb == NULL) {
-      ESP_LOGD(TAG, "SET FRAMEBUFFER SIZE TO DISPLAY SIZE 320x240x2bpp");
+      ESP_LOGD(TAG, "Using 32-bit aligned ram shared with display - 320x240x2bpp");
       int max_fb_size = 320 * 240 * 2;
       //s_state->width * s_state->height * 2;
       if (config->displayBuffer == NULL) {
@@ -477,7 +463,6 @@ esp_err_t camera_init(const camera_config_t* config)
         err = ESP_ERR_NO_MEM;
         goto fail;
     }
-
     ESP_LOGD(TAG, "Initializing I2S and DMA");
     i2s_init();
     err = dma_desc_init();
@@ -485,7 +470,6 @@ esp_err_t camera_init(const camera_config_t* config)
         ESP_LOGE(TAG, "Failed to initialize I2S and DMA");
         goto fail;
     }
-
     s_state->data_ready = xQueueCreate(16, sizeof(size_t));
     s_state->frame_ready = xSemaphoreCreateBinary();
     if (s_state->data_ready == NULL || s_state->frame_ready == NULL) {
@@ -493,36 +477,14 @@ esp_err_t camera_init(const camera_config_t* config)
         err = ESP_ERR_NO_MEM;
         goto fail;
     }
-
     if (!xTaskCreatePinnedToCore(&dma_filter_task, "dma_filter", 4096, NULL, 10, &s_state->dma_filter_task, 1)) {
        ESP_LOGE(TAG, "Failed to create DMA filter task");
        err = ESP_ERR_NO_MEM;
        goto fail;
     }
-/*
-// TEKKER MOD!!!!
-    if (test_tft_filter) {
-      ESP_LOGI(TAG, "Creating DMA filter task TFT");
-      if (!xTaskCreatePinnedToCore(&dma_filter_task_tft, "dma_filter", 4096, NULL, 10, &s_state->dma_filter_task, 1)) {
-         ESP_LOGE(TAG, "Failed to create DMA filter task TFT");
-         err = ESP_ERR_NO_MEM;
-         goto fail;
-      }
-    } else {
-
-     if (!xTaskCreatePinnedToCore(&dma_filter_task, "dma_filter", 4096, NULL, 10, &s_state->dma_filter_task, 1)) {
-        ESP_LOGE(TAG, "Failed to create DMA filter task");
-        err = ESP_ERR_NO_MEM;
-        goto fail;
-     }
-    }
-*/
-    //delay(1);
-
     ESP_LOGD(TAG, "Initializing GPIO interrupts");
     gpio_set_intr_type(s_state->config.pin_vsync, GPIO_INTR_NEGEDGE);
     gpio_intr_enable(s_state->config.pin_vsync);
-
     if (&s_state->vsync_intr_handle == NULL) {
       ESP_LOGD(TAG, "Initializing GPIO ISR Register");
       err = gpio_isr_register(&gpio_isr, (void*) TAG,
@@ -535,7 +497,6 @@ esp_err_t camera_init(const camera_config_t* config)
     } else {
       ESP_LOGD(TAG, "Skipping GPIO ISR Register, already enabled...");
     }
-
     // skip at least one frame after changing camera settings
     while (gpio_get_level(s_state->config.pin_vsync) == 0) {
         ;
@@ -548,14 +509,12 @@ esp_err_t camera_init(const camera_config_t* config)
     }
     s_state->frame_count = 0;
     //ESP_LOGD(TAG, "Init done");
-
     return ESP_OK;
 
 fail:
 
     if (s_state->fb != NULL)
       free(s_state->fb);
-
     if (s_state->data_ready) {
         vQueueDelete(s_state->data_ready);
     }
@@ -602,7 +561,7 @@ size_t camera_get_data_size()
     return s_state->data_size;
 }
 
-static char frame_info_str[40]; //
+
 
 esp_err_t camera_run()
 {
@@ -617,7 +576,6 @@ esp_err_t camera_run()
     i2s_run();
 
     // set
-
     ESP_LOGD(TAG, "Waiting for frame");
 
     xSemaphoreTake(s_state->frame_ready, portMAX_DELAY);
@@ -625,6 +583,7 @@ esp_err_t camera_run()
     gettimeofday(&tv_end, NULL);
     int time_ms = (tv_end.tv_sec - tv_start.tv_sec) * 1000 + (tv_end.tv_usec - tv_start.tv_usec) / 1000;
 
+//    char frame_info_str[40]; //
 //    print_frame_data(frame_info_str);
 //    ESP_LOGI(TAG, "Frame format %s : %d done in %d ms", frame_info_str, s_state->frame_count, time_ms);
     ESP_LOGI(TAG, "Frame %d done in %d ms", s_state->frame_count, time_ms);

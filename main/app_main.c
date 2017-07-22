@@ -339,8 +339,8 @@ static void handle_camera_config_chg(bool reinit_reqd) {
 static int help_cb(const sarg_result *res)
 {
     UNUSED(res);
-		char *buf;
-		int ret;
+    char *buf;
+    int ret;
 
     ret = sarg_help_text(&root, &buf);
     if(ret != SARG_ERR_SUCCESS)
@@ -352,8 +352,8 @@ static int help_cb(const sarg_result *res)
     ESP_LOGD(TAG," help_cb: %s",telnet_cmd_response_buff);
     telnet_esp32_sendData((uint8_t *)telnet_cmd_response_buff, strlen(telnet_cmd_response_buff));
 
-		free(buf);
-		return 0;
+    free(buf);
+    return 0;
 }
 
 static int sys_stats_cb(const sarg_result *res)
@@ -447,8 +447,6 @@ static int  ov7670_colorbar_cb(const sarg_result *res) {
 }
 
 
-/*
-
 static int  ov7670_saturation_cb(const sarg_result *res) {
   int level = 0;
   level = res->int_val;
@@ -470,6 +468,7 @@ static int  ov7670_hue_cb(const sarg_result *res) {
   }
   return SARG_ERR_SUCCESS;
 }
+
 
 static int  ov7670_brightness_cb(const sarg_result *res) {
   int level = 0;
@@ -493,6 +492,7 @@ static int  ov7670_contrast_cb(const sarg_result *res) {
   return SARG_ERR_SUCCESS;
 }
 
+/*
 
 static int  ov7670_hflip_cb(const sarg_result *res) {
   //set_vflip
@@ -522,9 +522,9 @@ static int  ov7670_vflip_cb(const sarg_result *res) {
 static int say_cb(const sarg_result *res)
 {
 
-	int length = 0;
+  int length = 0;
   length += sprintf(telnet_cmd_response_buff+length, "you say: %s\n", res->str_val);
-	ESP_LOGD(TAG," SAYCB: %s",telnet_cmd_response_buff);
+  ESP_LOGD(TAG," SAYCB: %s",telnet_cmd_response_buff);
 
   telnet_esp32_sendData((uint8_t *)telnet_cmd_response_buff, strlen(telnet_cmd_response_buff));
 
@@ -549,8 +549,8 @@ static int count_cb(const sarg_result *res)
 static int file_cb(const sarg_result *res)
 {
     got_file = 1;
-		int FILENAME_LEN = 256;
-		char filename[256];
+    int FILENAME_LEN = 256;
+    char filename[256];
     strncpy(filename, res->str_val, FILENAME_LEN);
     filename[FILENAME_LEN - 1] = '\0';
     return SARG_ERR_SUCCESS;
@@ -582,11 +582,13 @@ const static sarg_opt my_opts[] = {
     {NULL, "pixformat", "set pixel format (yuv422, rgb565)", STRING, ov7670_pixformat_cb},
     {NULL, "framerate", "set framerate (14,15,25,30)", INT, ov7670_framerate_cb},
     {NULL, "colorbar", "set test pattern (0=off/1=on)", INT, ov7670_colorbar_cb},
-/*
+
     {NULL, "saturation", "set saturation (1-256)", INT, ov7670_saturation_cb},
     {NULL, "hue", "set hue (-180 to 180)", INT, ov7670_hue_cb},
+
     {NULL, "brightness", "set brightness (-4 to 4)", INT, ov7670_brightness_cb},
     {NULL, "contrast", "set contrast (-4 to 4)", INT, ov7670_contrast_cb},
+/*
     {NULL, "hflip", "flip horizontal (0=off/1=on)", INT, ov7670_hflip_cb},
     {NULL, "vflip", "flip vertical (0=off/1=on)", INT, ov7670_vflip_cb},
 */
@@ -602,25 +604,25 @@ static int handle_command(uint8_t *cmdLine, size_t len)
     int ret = sarg_init(&root, my_opts, "ESPILICAM");
     assert(ret == SARG_ERR_SUCCESS);
 
-		// lots of redundant code here! //strcpy or memcpy would suffice
-		size_t cmd_len = len;
-		if (len > CMD_BUFFER_LEN) cmd_len = CMD_BUFFER_LEN;
-		for (int i = 0; i < cmd_len; i++)
-			telnet_cmd_buffer[i] = *(cmdLine+i);
-		telnet_cmd_buffer[cmd_len-1] = '\0';
+    // lots of redundant code here! //strcpy or memcpy would suffice
+    size_t cmd_len = len;
+    if (len > CMD_BUFFER_LEN) cmd_len = CMD_BUFFER_LEN;
+    for (int i = 0; i < cmd_len; i++)
+      telnet_cmd_buffer[i] = *(cmdLine+i);
+    telnet_cmd_buffer[cmd_len-1] = '\0';
 
-		ESP_LOGD(TAG, "Processing telnet_cmd_buffer len=%d - contents=%s",cmd_len,(char*)telnet_cmd_buffer);
+    ESP_LOGD(TAG, "Processing telnet_cmd_buffer len=%d - contents=%s",cmd_len,(char*)telnet_cmd_buffer);
 
     if(telnet_cmd_buffer != NULL) {
-			  // next command will call sarg_parse and call callbacks as needed...
+        // next command will call sarg_parse and call callbacks as needed...
         ret = sarg_parse_command_buffer(&root, telnet_cmd_buffer, cmd_len);
         if(ret != SARG_ERR_SUCCESS) {
-					  ESP_LOGE(TAG, "Command parsing failed");
+            ESP_LOGE(TAG, "Command parsing failed");
             sarg_destroy(&root);
             return -1;
         }
-				// command has been parsed and executed!
-				ESP_LOGD(TAG, "Command parser completed...");
+        // command has been parsed and executed!
+        ESP_LOGD(TAG, "Command parser completed...");
 
     }
     sarg_destroy(&root);
@@ -660,6 +662,7 @@ static void initialise_wifi(void)
     tcpip_adapter_init();
     wifi_event_group = xEventGroupCreate();
     ESP_ERROR_CHECK( esp_event_loop_init(event_handler, NULL) );
+
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK( esp_wifi_init(&cfg) );
     ESP_ERROR_CHECK( esp_wifi_set_storage(WIFI_STORAGE_RAM) );
@@ -691,23 +694,23 @@ uint8_t getHexVal(char c)
 
 
 static void recvData(uint8_t *buffer, size_t size) {
-	char cmdRecptMessage[100];
-	int length = 0;
-	ESP_LOGD(TAG, "We received: %.*s", size, buffer);
-	handle_command(buffer, size);
+  char cmdRecptMessage[100];
+  int length = 0;
+  ESP_LOGD(TAG, "We received: %.*s", size, buffer);
+  handle_command(buffer, size);
   // have to wait for callback for actual response.. echo recpt for now
-	length += sprintf(cmdRecptMessage, "%s","#: ");
-	if (strlen(telnet_cmd_response_buff) > 0)
-	  sprintf(cmdRecptMessage+length, "%s\n", telnet_cmd_response_buff);
+  length += sprintf(cmdRecptMessage, "%s","#: ");
+  if (strlen(telnet_cmd_response_buff) > 0)
+    sprintf(cmdRecptMessage+length, "%s\n", telnet_cmd_response_buff);
 
-	telnet_esp32_sendData((uint8_t *)cmdRecptMessage, strlen(cmdRecptMessage));
+  telnet_esp32_sendData((uint8_t *)cmdRecptMessage, strlen(cmdRecptMessage));
 }
 
 static void telnetTask(void *data) {
-	ESP_LOGD(TAG, ">> telnetTask");
-	telnet_esp32_listenForClients(recvData);
-	ESP_LOGD(TAG, "<< telnetTask");
-	vTaskDelete(NULL);
+  ESP_LOGD(TAG, ">> telnetTask");
+  telnet_esp32_listenForClients(recvData);
+  ESP_LOGD(TAG, "<< telnetTask");
+  vTaskDelete(NULL);
 }
 
 
@@ -764,13 +767,13 @@ inline uint8_t unpack(int byteNumber, uint32_t value) {
     return (value >> (byteNumber * 8));
 }
 
-
+// 8-bit logic
 static void convert_yuv_line_to_565(uint8_t *srcline, uint8_t *destline, int byte_len) {
 
   uint16_t pixel565 = 0;
   uint16_t pixel565_2 = 0;
-	for (int current_byte_pos = 0; current_byte_pos < byte_len; current_byte_pos += 4)
-	{
+  for (int current_byte_pos = 0; current_byte_pos < byte_len; current_byte_pos += 4)
+  {
        uint8_t y1, y2, u, v;
        y1 = srcline[current_byte_pos+3];
        v = srcline[current_byte_pos+2];
@@ -796,6 +799,49 @@ static void convert_yuv_line_to_565(uint8_t *srcline, uint8_t *destline, int byt
 
 }
 
+
+static void convert_fb32bit_line_to_bmp565(uint32_t *srcline, uint8_t *destline, const camera_pixelformat_t format) {
+
+  uint16_t pixel565 = 0;
+  uint16_t pixel565_2 = 0;
+  uint32_t long2px = 0;
+  uint16_t *sptr;
+  int current_src_pos=0, current_dest_pos=0;
+  for (int current_pixel_pos = 0; current_pixel_pos < 320; current_pixel_pos += 2)
+  {
+    current_src_pos = current_pixel_pos/2;
+    long2px = srcline[current_src_pos];
+    if (format == CAMERA_PF_YUV422) {
+        uint8_t y1, y2, u, v;
+        y1 = unpack(0,long2px);
+        v = unpack(1,long2px);;
+        y2 = unpack(2,long2px);
+        u = unpack(3,long2px);
+
+        pixel565 = fast_yuv_to_rgb565(y1,u,v);
+        pixel565_2 = fast_yuv_to_rgb565(y2,u,v);
+
+        sptr = &destline[current_dest_pos];
+        *sptr = pixel565;
+        sptr = &destline[current_dest_pos+2];
+        *sptr = pixel565_2;
+        current_dest_pos += 4;
+
+    } else if (format == CAMERA_PF_RGB565) {
+      pixel565 =  (unpack(2,long2px) << 8) | unpack(3,long2px);
+      pixel565_2 = (unpack(0,long2px) << 8) | unpack(1,long2px);
+
+      sptr = &destline[current_dest_pos];
+      *sptr = pixel565;
+      sptr = &destline[current_dest_pos+2];
+      *sptr = pixel565_2;
+      current_dest_pos += 4;
+    }
+  }
+
+}
+
+/*
 static void convert_ili565_32bit_line_to_565(uint32_t *srcline, uint8_t *destline) {
 
   uint16_t pixel565 = 0;
@@ -803,8 +849,8 @@ static void convert_ili565_32bit_line_to_565(uint32_t *srcline, uint8_t *destlin
   uint32_t long2px = 0;
   uint16_t *sptr;
   int current_src_pos=0, current_dest_pos=0;
-	for (int current_pixel_pos = 0; current_pixel_pos < 320; current_pixel_pos += 2)
-	{
+  for (int current_pixel_pos = 0; current_pixel_pos < 320; current_pixel_pos += 2)
+  {
         current_src_pos = current_pixel_pos/2;
         long2px = srcline[current_src_pos];
 
@@ -828,8 +874,8 @@ static void convert_yuv_32bit_line_to_565(uint32_t *srcline, uint8_t *destline) 
   uint32_t long2px = 0;
   uint16_t *sptr;
   int current_src_pos=0, current_dest_pos=0;
-	for (int current_pixel_pos = 0; current_pixel_pos < 320; current_pixel_pos += 2)
-	{
+  for (int current_pixel_pos = 0; current_pixel_pos < 320; current_pixel_pos += 2)
+  {
         uint8_t y1, y2, u, v;
         current_src_pos = current_pixel_pos/2;
         long2px = srcline[current_src_pos];
@@ -848,13 +894,14 @@ static void convert_yuv_32bit_line_to_565(uint32_t *srcline, uint8_t *destline) 
         current_dest_pos += 4;
   }
 }
+*/
 
 void spi_lcd_wait_finish() {
-	xSemaphoreTake(dispDoneSem, portMAX_DELAY);
+  xSemaphoreTake(dispDoneSem, portMAX_DELAY);
 }
 
 void spi_lcd_send() {
-	xSemaphoreGive(dispSem);
+  xSemaphoreGive(dispSem);
 }
 
 #define ILI_WIDTH 320
@@ -881,7 +928,7 @@ static void push_framebuffer_to_tft(void *pvParameters) {
   while(1) {
   //   frame++;
      xSemaphoreTake(dispSem, portMAX_DELAY);
- //		printf("Display task: frame.\n");
+ //   printf("Display task: frame.\n");
      bool reset_loop = false;
      for (y=0; y<ILI_HEIGHT; y++) {
         //Calculate a line, operate on 2 pixels at a time...
@@ -965,19 +1012,15 @@ static void push_framebuffer_to_tft(void *pvParameters) {
   } // end while(1)
 }
 
-
-
 static void http_server_netconn_serve(struct netconn *conn)
 {
     struct netbuf *inbuf;
     char *buf;
     u16_t buflen;
     err_t err;
-
     /* Read the data from the port, blocking if nothing yet there.
      We assume the request (the part we care about) is in one netbuf */
     err = netconn_recv(conn, &inbuf);
-
     if (err == ERR_OK) {
         netbuf_data(inbuf, (void**) &buf, &buflen);
 
@@ -991,9 +1034,6 @@ static void http_server_netconn_serve(struct netconn *conn)
              */
           netconn_write(conn, http_hdr, sizeof(http_hdr) - 1,
                     NETCONN_NOCOPY);
-            //check if a command has been requested.
-            //MOVED TO TELNET CMD PARSER
-            bool reinit_reqd = true;
 
            //check if a stream is requested.
            if (buf[5] == 's') {
@@ -1013,47 +1053,37 @@ static void http_server_netconn_serve(struct netconn *conn)
                     spi_lcd_send();
                     spi_lcd_wait_finish();
 
-
-
                     if (err != ESP_OK) {
                         ESP_LOGD(TAG, "Camera capture failed with error = %d", err);
                     } else {
                         ESP_LOGD(TAG, "Done");
-                        //Send jpeg header
+                        //stream an image..
                         if((s_pixel_format == CAMERA_PF_RGB565) || (s_pixel_format == CAMERA_PF_YUV422)) {
+                            // write mime boundary start
                             err = netconn_write(conn, http_bitmap_hdr, sizeof(http_bitmap_hdr) - 1,
                                 NETCONN_NOCOPY);
+                            // write bitmap header
                             char *bmp = bmp_create_header565(camera_get_fb_width(), camera_get_fb_height());
                             err = netconn_write(conn, bmp, sizeof(bitmap565), NETCONN_NOCOPY);
                             free(bmp);
+                            // convert framebuffer on the fly...
+                            // only rgb and yuv...
+                            uint8_t s_line[320*2];
+                            uint32_t *fbl;
+                            for (int i = 0; i < 240; i++) {
+                              fbl = &currFbPtr[(i*320)/2];  //(i*(320*2)/4); // 4 bytes for each 2 pixel / 2 byte read..
+                              convert_fb32bit_line_to_bmp565(fbl, s_line,s_pixel_format);
+                              err = netconn_write(conn, s_line, 320*2,
+                                            NETCONN_COPY);
+                            }
                         }
-                        else
+                        else { // stream jpeg
                             err = netconn_write(conn, http_jpg_hdr, sizeof(http_jpg_hdr) - 1,
                                 NETCONN_NOCOPY);
-
-                        if ((s_pixel_format == CAMERA_PF_YUV422)) {
-                          //Send frame
-                            uint8_t s_line[320*2];
-                            uint32_t *fbl;
-                            for (int i = 0; i < 240; i++) {
-                              fbl = &currFbPtr[(i*320)/2];  //(i*(320*2)/4); // 4 bytes for each 2 pixel / 2 byte read..
-                              convert_yuv_32bit_line_to_565(fbl, s_line);
-                              err = netconn_write(conn, s_line, 320*2,
-                                  NETCONN_COPY);
-                              //vTaskDelay(1); // just in case! - but will slow down kBps
-                            }
-                        } else  {
-                            uint8_t s_line[320*2];
-                            uint32_t *fbl;
-                            for (int i = 0; i < 240; i++) {
-                              fbl = &currFbPtr[(i*320)/2];  //(i*(320*2)/4); // 4 bytes for each 2 pixel / 2 byte read..
-                              convert_ili565_32bit_line_to_565(fbl, s_line);
-                              err = netconn_write(conn, s_line, 320*2,
-                                  NETCONN_COPY);
-                              //vTaskDelay(1); // just in case! - but will slow down kBps
-                            }
+                            if(err == ERR_OK)
+                              err = netconn_write(conn, camera_get_fb(), camera_get_data_size(),
+                                              NETCONN_COPY);
                         }
-
                         if(err == ERR_OK)
                         {
                             //Send boundary to next jpeg
@@ -1069,7 +1099,6 @@ static void http_server_netconn_serve(struct netconn *conn)
                     netconn_write(conn, http_jpg_hdr, sizeof(http_jpg_hdr) - 1, NETCONN_NOCOPY);
                 } else if (s_pixel_format == CAMERA_PF_GRAYSCALE) {
                     netconn_write(conn, http_pgm_hdr, sizeof(http_pgm_hdr) - 1, NETCONN_NOCOPY);
-
                     if (memcmp(&buf[5], "pgm", 3) == 0) {
                         char pgm_header[32];
                         snprintf(pgm_header, sizeof(pgm_header), "P5 %d %d %d\n", camera_get_fb_width(), camera_get_fb_height(), 255);
@@ -1081,9 +1110,8 @@ static void http_server_netconn_serve(struct netconn *conn)
                       netconn_write(conn, outstr, sizeof(outstr) - 1, NETCONN_NOCOPY);
                       //netconn_write(conn, http_yuv422_hdr, sizeof(http_yuv422_hdr) - 1, NETCONN_NOCOPY);
                     }
-
-                } else if (s_pixel_format == CAMERA_PF_RGB565) {
-
+                } else
+                 if (s_pixel_format == CAMERA_PF_RGB565) {
                     netconn_write(conn, http_bitmap_hdr, sizeof(http_bitmap_hdr) - 1, NETCONN_NOCOPY);
                     if (memcmp(&buf[5], "bmp", 3) == 0) {
                         char *bmp = bmp_create_header565(camera_get_fb_width(), camera_get_fb_height());
@@ -1096,58 +1124,59 @@ static void http_server_netconn_serve(struct netconn *conn)
                       netconn_write(conn, outstr, sizeof(outstr) - 1, NETCONN_NOCOPY);
                       //netconn_write(conn, http_yuv422_hdr, sizeof(http_yuv422_hdr) - 1, NETCONN_NOCOPY);
                     }
-
                 } else if (s_pixel_format == CAMERA_PF_YUV422) {
                   if (memcmp(&buf[5], "bmp", 3) == 0) {
-
-                      ESP_LOGD(TAG, "Converting YUV framebuffer to RGB565 requested.");
-                      PAUSE_DISPLAY = true;
-                      // doh!!! iss not werrrrrkiiiinn!!!@
-                      //convert_yuv_framebuffer_to_565();
-                      PAUSE_DISPLAY = false;
+                      //PAUSE_DISPLAY = true;
                       // send YUV converted to 565 2bpp for now...
                       netconn_write(conn, http_bitmap_hdr, sizeof(http_bitmap_hdr) - 1, NETCONN_NOCOPY);
                       char *bmp = bmp_create_header565(camera_get_fb_width(), camera_get_fb_height());
                       err = netconn_write(conn, bmp, sizeof(bitmap565), NETCONN_COPY);
-
-                      //char *bmp = bmp_create_header(camera_get_fb_width(), camera_get_fb_height());
-                      //err = netconn_write(conn, bmp, sizeof(bitmap), NETCONN_COPY);
                       free(bmp);
                   } else {
-
                     char outstr[120];
                     get_image_mime_info_str(outstr);
                     netconn_write(conn, outstr, sizeof(outstr) - 1, NETCONN_NOCOPY);
                     //netconn_write(conn, http_yuv422_hdr, sizeof(http_yuv422_hdr) - 1, NETCONN_NOCOPY);
                   }
-
                 } else {
                   char outstr[120];
                   get_image_mime_info_str(outstr);
                   netconn_write(conn, outstr, sizeof(outstr) - 1, NETCONN_NOCOPY);
                 }
+                // handle non streaming images (http../get and http:../bmp )
 
-                if (!reinit_reqd) {
                   ESP_LOGD(TAG, "Image requested.");
                   PAUSE_DISPLAY = true;
                   err = camera_run();
                   PAUSE_DISPLAY = false;
+                  spi_lcd_send();
+                  spi_lcd_wait_finish();
+
                   if (err != ESP_OK) {
                       ESP_LOGD(TAG, "Camera capture failed with error = %d", err);
                   } else {
                       ESP_LOGD(TAG, "Done");
                       //Send jpeg
-                      err = netconn_write(conn, camera_get_fb(), camera_get_data_size(),
+                      if ((s_pixel_format == CAMERA_PF_RGB565) || (s_pixel_format == CAMERA_PF_YUV422)) {
+                        ESP_LOGD(TAG, "Converting framebuffer to RGB565 requested, sending...");
+                        uint8_t s_line[320*2];
+                        uint32_t *fbl;
+                        for (int i = 0; i < 240; i++) {
+                          fbl = &currFbPtr[(i*320)/2];  //(i*(320*2)/4); // 4 bytes for each 2 pixel / 2 byte read..
+                          convert_fb32bit_line_to_bmp565(fbl, s_line,s_pixel_format);
+                          err = netconn_write(conn, s_line, 320*2,
+                                        NETCONN_COPY);
+                        }
+                      } else
+                        err = netconn_write(conn, camera_get_fb(), camera_get_data_size(),
                           NETCONN_NOCOPY);
+                  } // handle .bmp and std gets...
 
-                  }
-                }
             }
         }
     }
     /* Close the connection (server closes in HTTP) */
     netconn_close(conn);
-
     /* Delete the buffer (netconn_recv gives us ownership,
      so we have to make sure to deallocate the buffer) */
     netbuf_delete(inbuf);
@@ -1268,7 +1297,7 @@ void app_main()
 
     //delay(10000);
     // VERY UNSTABLE without this delay after init'ing wifi...
-    vTaskDelay(10000 / portTICK_RATE_MS);
+    vTaskDelay(2000 / portTICK_RATE_MS);
 
 
     config.displayBuffer = currFbPtr;
@@ -1279,6 +1308,7 @@ void app_main()
         return;
     }
 
+    vTaskDelay(1000 / portTICK_RATE_MS);
 
     ESP_LOGI(TAG, "Free heap: %u", xPortGetFreeHeapSize());
     ESP_LOGI(TAG, "Camera demo ready");
@@ -1308,9 +1338,9 @@ void app_main()
     //PAUSE_DISPLAY=false;
     //push_framebuffer_to_tft(NULL);
 
-		// start telnet task after IP is assigned...
-		ESP_LOGD(TAG, "Starting Telnetd task...");
-		xTaskCreatePinnedToCore(&telnetTask, "telnetTask", 8048, NULL, 5, NULL, 1);
+    // start telnet task after IP is assigned...
+    ESP_LOGD(TAG, "Starting Telnetd task...");
+    xTaskCreatePinnedToCore(&telnetTask, "telnetTask", 8048, NULL, 5, NULL, 1);
 
 
 }
