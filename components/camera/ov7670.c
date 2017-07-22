@@ -198,6 +198,40 @@ static const uint8_t saturation_regs[NUM_SATURATION_LEVELS][2] = {
     {0x80, 0x80}, /* +4 */
 };
 
+/* FREESCALE OV7670 Driver functions */
+
+typedef struct ov7670_frame_rate_cfg
+{
+  uint8_t       clkrc;
+  uint8_t       dblv;
+  uint8_t       exhch;
+  uint8_t       exhcl;
+  uint8_t       dm_lnl;
+  uint8_t       dm_lnh;
+} ov7670_frame_rate_cfg_t;
+
+
+/*! @brief Frame rate initialization structure data                           */
+const ov7670_frame_rate_cfg_t OV7670_30FPS_26MHZ_XCLK = {0x80, 0x0a, 0x00, 0x00, 0x2b, 0x00};
+const ov7670_frame_rate_cfg_t OV7670_25FPS_26MHZ_XCLK = {0x80, 0x0a, 0x00, 0x00, 0x99, 0x00};
+const ov7670_frame_rate_cfg_t OV7670_15FPS_26MHZ_XCLK = {0x00, 0x0a, 0x00, 0x00, 0x2b, 0x00};
+const ov7670_frame_rate_cfg_t OV7670_14FPS_26MHZ_XCLK = {0x00, 0x0a, 0x00, 0x00, 0x46, 0x00};
+
+const ov7670_frame_rate_cfg_t OV7670_30FPS_24MHZ_XCLK = {0x80, 0x0a, 0x00, 0x00, 0x00, 0x00};
+const ov7670_frame_rate_cfg_t OV7670_25FPS_24MHZ_XCLK = {0x80, 0x0a, 0x00, 0x00, 0x66, 0x00};
+const ov7670_frame_rate_cfg_t OV7670_15FPS_24MHZ_XCLK = {0x00, 0x0a, 0x00, 0x00, 0x00, 0x00};
+const ov7670_frame_rate_cfg_t OV7670_14FPS_24MHZ_XCLK = {0x00, 0x0a, 0x00, 0x00, 0x1a, 0x00};
+
+const ov7670_frame_rate_cfg_t OV7670_30FPS_13MHZ_XCLK = {0x00, 0x4a, 0x00, 0x00, 0x2b, 0x00};
+const ov7670_frame_rate_cfg_t OV7670_25FPS_13MHZ_XCLK = {0x00, 0x4a, 0x00, 0x00, 0x99, 0x00};
+const ov7670_frame_rate_cfg_t OV7670_15FPS_13MHZ_XCLK = {0x01, 0x4a, 0x00, 0x00, 0x2b, 0x00};
+const ov7670_frame_rate_cfg_t OV7670_14FPS_13MHZ_XCLK = {0x01, 0x4a, 0x00, 0x00, 0x46, 0x00};
+
+const ov7670_frame_rate_cfg_t OV7670_30FPS_12MHZ_XCLK = {0x00, 0x4a, 0x00, 0x00, 0x2b, 0x00};
+const ov7670_frame_rate_cfg_t OV7670_25FPS_12MHZ_XCLK = {0x00, 0x4a, 0x00, 0x00, 0x66, 0x00};
+const ov7670_frame_rate_cfg_t OV7670_15FPS_12MHZ_XCLK = {0x01, 0x4a, 0x00, 0x00, 0x2b, 0x00};
+const ov7670_frame_rate_cfg_t OV7670_14FPS_12MHZ_XCLK = {0x01, 0x4a, 0x00, 0x00, 0x46, 0x00};
+
 static inline void I2CSet(uint8_t device, uint8_t reg, uint8_t mask, uint8_t value) {
     // Perform a Read-Modify-Write
     uint8_t content = SCCB_Read(device, reg);
@@ -213,6 +247,190 @@ static inline void I2CSet(uint8_t device, uint8_t reg, uint8_t mask, uint8_t val
     }
 }
 
+/* frame-rate related registers */
+#define OV7670_CLKRC_REG                0x11    ///< Clocl control
+#define OV7670_EXHCH_REG                0x2a    ///< dummy pixel insert MSB
+#define OV7670_EXHCL_REG                0x2b    ///< dummy pixel insert LSB
+#define OV7670_DBLV_REG                 0x6b
+#define OV7670_DM_LNL_REG               0x92    ///< dummy line low 8 bits
+#define OV7670_DM_LNH_REG               0x93    ///< dummy line high 8 bits
+
+/* V4L2 Video4Linux ov7670 driver from linux kernel */
+
+/*
+ * This matrix defines how the colors are generated, must be
+ * tweaked to adjust hue and saturation.
+ *
+ * Order: v-red, v-green, v-blue, u-red, u-green, u-blue
+ *
+ * They are nine-bit signed quantities, with the sign bit
+ * stored in 0x58.  Sign for v-red is bit 0, and up from there.
+ */
+#define REG_CMATRIX_BASE 0x4f
+#define CMATRIX_LEN 6
+#define REG_CMATRIX_SIGN 0x58
+
+typedef struct ov7670_info {
+	int cmatrix[CMATRIX_LEN];
+	unsigned char sat;		/* Saturation value */
+	int hue;			/* Hue value */
+	uint8_t clkrc;			/* Clock divider value */
+} ov7670_info_t;
+
+static ov7670_info_t current_ov7670_state;
+
+static const int cmatrixYUV[CMATRIX_LEN]	= { 128, -128, 0, -34, -94, 128 };
+static const int cmatrix565[CMATRIX_LEN]	= { 179, -179, 0, -61, -176, 228 };
+static const int cmatrix444[CMATRIX_LEN]	= { 179, -179, 0, -61, -176, 228 };
+
+/*!
+ * @brief OV7670 frame rate adjustment.
+ * @param @ref ov7670_handler_t structure.
+ * @param @ref ov7670_frame_rate_cfg_t structure.
+ */
+void OV7670_FrameRateAdjustment(sensor_t *sensor, ov7670_frame_rate_cfg_t *frame_rate_cfg)
+{
+  SCCB_Write(sensor->slv_addr, OV7670_CLKRC_REG, frame_rate_cfg->clkrc); systick_sleep(1);
+  SCCB_Write(sensor->slv_addr, OV7670_DBLV_REG, frame_rate_cfg->dblv); systick_sleep(1);
+  SCCB_Write(sensor->slv_addr, OV7670_EXHCH_REG, frame_rate_cfg->exhch); systick_sleep(1);
+  SCCB_Write(sensor->slv_addr, OV7670_EXHCL_REG, frame_rate_cfg->exhcl); systick_sleep(1);
+  SCCB_Write(sensor->slv_addr, OV7670_DM_LNL_REG, frame_rate_cfg->dm_lnl); systick_sleep(1);
+  SCCB_Write(sensor->slv_addr, OV7670_DM_LNL_REG, frame_rate_cfg->dm_lnh); systick_sleep(1);
+  // store new clkrc
+  current_ov7670_state.clkrc = frame_rate_cfg->clkrc;
+}
+
+static int ov7670_store_cmatrix(sensor_t *sensor,
+		int matrix[CMATRIX_LEN])
+{
+	int i, ret=0;
+	unsigned char signbits = 0;
+
+	/*
+	 * Weird crap seems to exist in the upper part of
+	 * the sign bits register, so let's preserve it.
+	 */
+	//ret = SCCB_Read(sensor->slv_addr, REG_CMATRIX_SIGN, &signbits);
+  signbits = SCCB_Read(sensor->slv_addr, REG_CMATRIX_SIGN);
+  signbits &= 0xc0;
+
+	for (i = 0; i < CMATRIX_LEN; i++) {
+		unsigned char raw;
+
+		if (matrix[i] < 0) {
+			signbits |= (1 << i);
+			if (matrix[i] < -255)
+				raw = 0xff;
+			else
+				raw = (-1 * matrix[i]) & 0xff;
+		}
+		else {
+			if (matrix[i] > 255)
+				raw = 0xff;
+			else
+				raw = matrix[i] & 0xff;
+		}
+		ret += SCCB_Write(sensor->slv_addr, REG_CMATRIX_BASE + i, raw);
+	}
+	ret += SCCB_Write(sensor->slv_addr, REG_CMATRIX_SIGN, signbits);
+	return ret;
+}
+
+
+/*
+ * Hue also requires messing with the color matrix.  It also requires
+ * trig functions, which tend not to be well supported in the kernel.
+ * So here is a simple table of sine values, 0-90 degrees, in steps
+ * of five degrees.  Values are multiplied by 1000.
+ *
+ * The following naive approximate trig functions require an argument
+ * carefully limited to -180 <= theta <= 180.
+ */
+#define SIN_STEP 5
+static const int ov7670_sin_table[] = {
+	   0,	 87,   173,   258,   342,   422,
+	 499,	573,   642,   707,   766,   819,
+	 866,	906,   939,   965,   984,   996,
+	1000
+};
+
+static int ov7670_sine(int theta)
+{
+	int chs = 1;
+	int sine;
+
+	if (theta < 0) {
+		theta = -theta;
+		chs = -1;
+	}
+	if (theta <= 90)
+		sine = ov7670_sin_table[theta/SIN_STEP];
+	else {
+		theta -= 90;
+		sine = 1000 - ov7670_sin_table[theta/SIN_STEP];
+	}
+	return sine*chs;
+}
+
+static int ov7670_cosine(int theta)
+{
+	theta = 90 - theta;
+	if (theta > 180)
+		theta -= 360;
+	else if (theta < -180)
+		theta += 360;
+	return ov7670_sine(theta);
+}
+
+static void ov7670_calc_cmatrix(ov7670_info_t *info,
+		int matrix[CMATRIX_LEN])
+{
+	int i;
+	/*
+	 * Apply the current saturation setting first.
+	 */
+	for (i = 0; i < CMATRIX_LEN; i++)
+		matrix[i] = (info->cmatrix[i]*info->sat) >> 7;
+	/*
+	 * Then, if need be, rotate the hue value.
+	 */
+	if (info->hue != 0) {
+		int sinth, costh, tmpmatrix[CMATRIX_LEN];
+
+		memcpy(tmpmatrix, matrix, CMATRIX_LEN*sizeof(int));
+		sinth = ov7670_sine(info->hue);
+		costh = ov7670_cosine(info->hue);
+
+		matrix[0] = (matrix[3]*sinth + matrix[0]*costh)/1000;
+		matrix[1] = (matrix[4]*sinth + matrix[1]*costh)/1000;
+		matrix[2] = (matrix[5]*sinth + matrix[2]*costh)/1000;
+		matrix[3] = (matrix[3]*costh - matrix[0]*sinth)/1000;
+		matrix[4] = (matrix[4]*costh - matrix[1]*sinth)/1000;
+		matrix[5] = (matrix[5]*costh - matrix[2]*sinth)/1000;
+	}
+}
+
+static int ov7670_set_sat(sensor_t *sensor, ov7670_info_t* info, int value)
+{
+	int matrix[CMATRIX_LEN];
+	int ret;
+	info->sat = value;
+	ov7670_calc_cmatrix(info, matrix);
+	ret = ov7670_store_cmatrix(sensor, matrix);
+	return ret;
+}
+
+static int ov7670_set_hue(sensor_t *sensor, ov7670_info_t* info, int value)
+{
+	int matrix[CMATRIX_LEN];
+	int ret;
+	if (value < -180 || value > 180)
+		return -1;
+	info->hue = value;
+	ov7670_calc_cmatrix(info, matrix);
+	ret = ov7670_store_cmatrix(sensor, matrix);
+	return ret;
+}
 
 static int reset(sensor_t *sensor)
 {
@@ -233,6 +451,10 @@ static int reset(sensor_t *sensor)
     // Delay
     systick_sleep(30);
 
+    current_ov7670_state.sat = 0;
+    current_ov7670_state.hue = 0;
+    //current_ov7670_state.clkrc = 0; // not used, tie to framerate / rgb565 set as needed...
+
     return 0;
 }
 
@@ -247,15 +469,20 @@ static int set_pixformat(sensor_t *sensor, pixformat_t pixformat)
         case PIXFORMAT_RGB565:
             reg =  COM7_SET_FMT(reg, COM7_FMT_RGB);
 	          reg2 = COM15_SET_RGB565(reg2, 1);
-            // swap byte order for ILI9341 direct display
-            I2CSet(sensor->slv_addr, TSLB, (1 << 3), 0x00); // swap byte order LH -> HL
+            // can swap byte order for ILI9341 direct display
+            // then its wrong order for BMP encoded pics!
+            // I2CSet(sensor->slv_addr, TSLB, (1 << 3), 0x00); // swap byte order LH -> HL
+            for (int i = 0; i < CMATRIX_LEN; i++)
+              current_ov7670_state.cmatrix[i] = cmatrix565[i];
 
             break;
         case PIXFORMAT_YUV422:
         case PIXFORMAT_GRAYSCALE:
-	default:
+	      default:
             reg =  COM7_SET_FMT(reg, COM7_FMT_YUV);
-	    reg2 = COM15_SET_RGB565(reg2, 0);
+	          reg2 = COM15_SET_RGB565(reg2, 0);
+            for (int i = 0; i < CMATRIX_LEN; i++)
+              current_ov7670_state.cmatrix[i] = cmatrixYUV[i];
             break;
     }
 
@@ -267,6 +494,7 @@ static int set_pixformat(sensor_t *sensor, pixformat_t pixformat)
     // Delay
     systick_sleep(30);
 
+/*
     if (pixformat == PIXFORMAT_YUV422) {
       // from ArduCAM - setup YUV color matrix...
       // https://github.com/ArduCAM/Arduino/blob/master/OV7670FIFO/OV7670FIFO.ino
@@ -281,7 +509,23 @@ static int set_pixformat(sensor_t *sensor, pixformat_t pixformat)
       rv = SCCB_Write(sensor->slv_addr, YMTXS, MTXS_VALUE);
 
     }
+*/
 
+    //ov7670_store_cmatrix(sensor, current_ov7670_state.cmatrix);
+
+    /*
+	 * If we're running RGB565, we must rewrite clkrc after setting
+	 * the other parameters or the image looks poor.  If we're *not*
+	 * doing RGB565, we must not rewrite clkrc or the image looks
+	 * *really* poor.
+	 *
+	 * (Update) Now that we retain clkrc state, we should be able
+	 * to write it unconditionally, and that will make the frame
+	 * rate persistent too.
+	 */
+	  if (pixformat == PIXFORMAT_RGB565) {
+		    ret = SCCB_Write(sensor->slv_addr, OV7670_CLKRC_REG, current_ov7670_state.clkrc ); // ret = ov7670_write(sd, REG_CLKRC, info->clkrc);
+    }
 
     return ret;
 }
@@ -291,6 +535,11 @@ static int set_framesize(sensor_t *sensor, framesize_t framesize)
 	const uint8_t (*regs)[2];
 	int ret=0;
 	int i=0;
+
+  // store clkrc before changing window settings...
+  int reg =  SCCB_Read(sensor->slv_addr, OV7670_CLKRC_REG);
+  current_ov7670_state.clkrc = reg;
+
 	switch(framesize)
 	{
 		case FRAMESIZE_VGA:
@@ -320,7 +569,15 @@ static int set_framesize(sensor_t *sensor, framesize_t framesize)
 
 static int set_framerate(sensor_t *sensor, framerate_t framerate)
 {
-    return 0;
+
+  // test with 12mhz clock first...
+  if (framerate == 0) OV7670_FrameRateAdjustment(sensor,&OV7670_14FPS_12MHZ_XCLK);
+  if (framerate == 1) OV7670_FrameRateAdjustment(sensor,&OV7670_15FPS_12MHZ_XCLK);
+  if (framerate == 2) OV7670_FrameRateAdjustment(sensor,&OV7670_25FPS_12MHZ_XCLK);
+  if (framerate == 3) OV7670_FrameRateAdjustment(sensor,&OV7670_30FPS_12MHZ_XCLK);
+
+  return 0;
+
 }
 
 static int set_contrast(sensor_t *sensor, int level)
@@ -363,6 +620,15 @@ static int set_saturation(sensor_t *sensor, int level)
     ret |= SCCB_Write(sensor->slv_addr, VSAT, saturation_regs[level][1]);
     return ret;
 */
+    ov7670_set_sat(sensor,&current_ov7670_state,level);
+
+	return 0;
+}
+
+static int set_hue(sensor_t *sensor, int level)
+{
+    ov7670_set_hue(sensor,&current_ov7670_state,level);
+
 	return 0;
 }
 
@@ -517,6 +783,7 @@ int ov7670_init(sensor_t *sensor)
     sensor->set_contrast  = set_contrast;
     sensor->set_brightness= set_brightness;
     sensor->set_saturation= set_saturation;
+    sensor->set_hue =       set_hue;
     sensor->set_gainceiling = set_gainceiling;
     sensor->set_colorbar = set_colorbar;
     sensor->set_whitebal = set_whitebal;

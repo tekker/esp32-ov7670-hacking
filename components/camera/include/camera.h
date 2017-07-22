@@ -73,6 +73,10 @@ typedef struct {
     camera_framesize_t frame_size;
 
     int jpeg_quality;
+    bool test_pattern_enabled;
+
+    uint32_t* displayBuffer;
+
 } camera_config_t;
 
 #define ESP_ERR_CAMERA_BASE 0x20000
@@ -113,7 +117,8 @@ esp_err_t camera_init(const camera_config_t* config);
  *
  * @return pointer to framebuffer
  */
-uint8_t* camera_get_fb();
+//uint8_t* camera_get_fb();
+uint32_t* camera_get_fb();
 
 /**
  * @brief Return the size of valid data in the framebuffer

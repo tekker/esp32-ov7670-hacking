@@ -15,17 +15,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <byteswap.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
+#include "esp_heap_alloc_caps.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
 #include "esp_event_loop.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "driver/gpio.h"
-
 #include "driver/spi_master.h"
 #include "soc/spi_reg.h"
 #include "driver/hspi.h"
@@ -41,6 +42,12 @@
 #include "lwip/netdb.h"
 #include "lwip/api.h"
 #include "bitmap.h"
+
+#include "telnet.h"
+
+static const char* TAG = "ESPILICAM";
+
+
 
 //#include "ov7670_ext.h"
 
@@ -58,15 +65,16 @@
  before the transaction is sent, the callback will set this line to the correct state.
 */
 
-#define PIN_NUM_MISO 12
-#define PIN_NUM_MOSI 13
-#define PIN_NUM_CLK  14
-#define PIN_NUM_CS   15
+#define PIN_NUM_MISO CONFIG_HW_LCD_MISO_GPIO
+#define PIN_NUM_MOSI CONFIG_HW_LCD_MOSI_GPIO
+#define PIN_NUM_CLK  CONFIG_HW_LCD_CLK_GPIO
+#define PIN_NUM_CS   CONFIG_HW_LCD_CS_GPIO
+#define PIN_NUM_DC   CONFIG_HW_LCD_DC_GPIO
+#define PIN_NUM_RST  CONFIG_HW_LCD_RESET_GPIO
+#define PIN_NUM_BCKL CONFIG_HW_LCD_BL_GPIO
 
-#define PIN_NUM_DC   16
-#define PIN_NUM_RST  33
-#define PIN_NUM_BCKL 17
-
+SemaphoreHandle_t dispSem = NULL;
+SemaphoreHandle_t dispDoneSem = NULL;
 
 /*
  The ILI9341 needs a bunch of command/argument values to be initialized. They are stored in this struct.
@@ -238,82 +246,10 @@ static void send_line_finish(spi_device_handle_t spi)
 }
 
 
-//Simple routine to generate some patterns and send them to the LCD. Don't expect anything too
-//impressive. Because the SPI driver handles transactions in the background, we can calculate the next line
-//while the previous one is being sent.
-/*
-static void display_pretty_colors(spi_device_handle_t spi)
-{
-    uint16_t line[2][320];
-    int x, y, frame=0;
-    //Indexes of the line currently being sent to the LCD and the line we're calculating.
-    int sending_line=-1;
-    int calc_line=0;
-    uint8_t* fb_ref = camera_get_fb();
-    int width = camera_get_fb_width();
-    int height =  camera_get_fb_height();
-    while(1) {
-        frame++;
-        for (y=0; y<height; y++) {
-            //Calculate a line.
-            for (x=0; x<width; x++) {
-                //line[calc_line][x]=((x<<3)^(y<<3)^(frame+x*y));
-
-                line[calc_line][x]=fb_ref[(y*width)+x]+0;
-
-            }
-            //Finish up the sending process of the previous line, if any
-            if (sending_line!=-1) send_line_finish(spi);
-            //Swap sending_line and calc_line
-            sending_line=calc_line;
-            calc_line=(calc_line==1)?0:1;
-            //Send the line we currently calculated.
-            send_line(spi, y, line[sending_line]);
-            //The line is queued up for sending now; the actual sending happens in the
-            //background. We can go on to calculate the next line as long as we do not
-            //touch line[sending_line]; the SPI sending process is still reading from that.
-        }
-    }
-}
-*/
-/*
-//Simple routine to generate some patterns and send them to the LCD. Don't expect anything too
-//impressive. Because the SPI driver handles transactions in the background, we can calculate the next line
-//while the previous one is being sent.
-static void display_pretty_colors(spi_device_handle_t spi)
-{
-    uint16_t line[2][320];
-    int x, y, frame=0;
-    //Indexes of the line currently being sent to the LCD and the line we're calculating.
-    int sending_line=-1;
-    int calc_line=0;
-
-    while(1) {
-        frame++;
-        for (y=0; y<240; y++) {
-            //Calculate a line.
-            for (x=0; x<320; x++) {
-                line[calc_line][x]=((x<<3)^(y<<3)^(frame+x*y));
-            }
-            //Finish up the sending process of the previous line, if any
-            if (sending_line!=-1) send_line_finish(spi);
-            //Swap sending_line and calc_line
-            sending_line=calc_line;
-            calc_line=(calc_line==1)?0:1;
-            //Send the line we currently calculated.
-            send_line(spi, y, line[sending_line]);
-            //The line is queued up for sending now; the actual sending happens in the
-            //background. We can go on to calculate the next line as long as we do not
-            //touch line[sending_line]; the SPI sending process is still reading from that.
-        }
-    }
-}
-
-*/
 
 // camera code
 
-static const char* TAG = "camera_demo";
+
 
 int state = 0;
 const static char http_hdr[] = "HTTP/1.1 200 OK\r\n";
@@ -329,12 +265,11 @@ const static char http_bitmap_hdr[] =
 const static char http_yuv422_hdr[] =
         "Content-Disposition: attachment; Content-type: application/octet-stream\r\n\r\n";
 
-
 static EventGroupHandle_t wifi_event_group;
 const int CONNECTED_BIT = BIT0;
 static ip4_addr_t s_ip_addr;
+
 static camera_pixelformat_t s_pixel_format;
-//static camera_config_t config
 static camera_config_t config = {
     .ledc_channel = LEDC_CHANNEL_0,
     .ledc_timer = LEDC_TIMER_0,
@@ -353,24 +288,348 @@ static camera_config_t config = {
     .pin_sscb_sda = CONFIG_SDA,
     .pin_sscb_scl = CONFIG_SCL,
     .pin_reset = CONFIG_RESET,
-    .xclk_freq_hz = 12000000,
-    //.xclk_freq_hz = 12000000, //20000000, // 20 works well across all with HS sampling ?
-    // above works well with freescale etc...
-    //CONFIG_XCLK_FREQ,
-    //.xclk_freq_hz = 20000000, //8000000, //16000000, //8000000,
-};
+    .xclk_freq_hz = CONFIG_XCLK_FREQ,
+    .test_pattern_enabled = CONFIG_ENABLE_TEST_PATTERN,
+    };
 
 static camera_model_t camera_model;
 
-// CHECK OV760 PIXFORMAT HACK!!!
-#define CAMERA_PIXEL_FORMAT CAMERA_PF_RGB565
-//#define CAMERA_PIXEL_FORMAT CAMERA_PF_GRAYSCALE
-//#define CAMERA_PIXEL_FORMAT CAMERA_PF_YUV422
-//#define CAMERA_FRAME_SIZE CAMERA_FS_QQVGA
+//#define CAMERA_PIXEL_FORMAT CAMERA_PF_RGB565
+#define CAMERA_PIXEL_FORMAT CAMERA_PF_YUV422
 #define CAMERA_FRAME_SIZE CAMERA_FS_QVGA
 
-static bool test_pattern_enabled = true;
+//static bool test_pattern_enabled = true;
 static int tft_offset = 0;
+
+// don't start rendering framebuffer until we have a picture to display..
+static bool PAUSE_DISPLAY=true;
+
+// command parser...
+#include "smallargs.h"
+
+#define UNUSED(x) ((void)x)
+#define RESPONSE_BUFFER_LEN 128
+#define CMD_BUFFER_LEN 128
+
+static sarg_root root;
+static char telnet_cmd_response_buff[RESPONSE_BUFFER_LEN];
+static char telnet_cmd_buffer[CMD_BUFFER_LEN];
+
+static int got_file = 0;
+
+static void handle_camera_config_chg(bool reinit_reqd) {
+  if (reinit_reqd) {
+              ESP_LOGD(TAG, "Reconfiguring camera...");
+              PAUSE_DISPLAY = true;
+              esp_err_t err;
+              vTaskDelay(100 / portTICK_RATE_MS);
+              err = reset_pixformat();
+              config.pixel_format = s_pixel_format;
+              err = camera_init(&config);
+              if (err != ESP_OK) {
+                  ESP_LOGE(TAG, "Camera init failed with error 0x%x", err);
+                  //return;
+              }
+              return;
+              vTaskDelay(100 / portTICK_RATE_MS);
+              PAUSE_DISPLAY = false;
+    }
+}
+
+static int help_cb(const sarg_result *res)
+{
+    UNUSED(res);
+		char *buf;
+		int ret;
+
+    ret = sarg_help_text(&root, &buf);
+    if(ret != SARG_ERR_SUCCESS)
+        return ret;
+
+    int length = 0;
+    length += sprintf(telnet_cmd_response_buff+length, "%s\n", buf);
+
+    ESP_LOGD(TAG," help_cb: %s",telnet_cmd_response_buff);
+    telnet_esp32_sendData((uint8_t *)telnet_cmd_response_buff, strlen(telnet_cmd_response_buff));
+
+		free(buf);
+		return 0;
+}
+
+static int sys_stats_cb(const sarg_result *res)
+{
+    int level = 0;
+    size_t free8start, free32start, free8, free32;
+    level = res->int_val;
+    int length = 0;
+
+    if (level == 0) {
+      free8start = xPortGetMinimumEverFreeHeapSizeCaps(MALLOC_CAP_8BIT);
+      free32start = xPortGetMinimumEverFreeHeapSizeCaps(MALLOC_CAP_32BIT);
+
+      free8=xPortGetFreeHeapSizeCaps(MALLOC_CAP_8BIT);
+      free32=xPortGetFreeHeapSizeCaps(MALLOC_CAP_32BIT);
+
+      length += sprintf(telnet_cmd_response_buff+length, "Free 8-bit=%db, free 32-bit=%db, min 8-bit=%db, min 32-bit=%db",free8,free32, free8start, free32start);
+
+    } else {  //if (level == 1) {
+      //vTaskList(telnet_cmd_response_buff);
+      length += sprintf(telnet_cmd_response_buff+length, "vTaskList not implemented..");
+
+    }
+
+    telnet_esp32_sendData((uint8_t *)telnet_cmd_response_buff, strlen(telnet_cmd_response_buff));
+
+    return SARG_ERR_SUCCESS;
+}
+
+static int  ov7670_xclck_cb(const sarg_result *res) {
+
+      int speed = 0;
+      speed = res->int_val;
+      ESP_LOGD(TAG, "Switch XCLCK to %dMHZ",speed);
+      speed = speed * 1000000;
+      config.xclk_freq_hz = speed;
+      reset_xclk(&config);
+
+      handle_camera_config_chg(true);
+
+  return SARG_ERR_SUCCESS;
+}
+
+static int  ov7670_pixformat_cb(const sarg_result *res) {
+  //int str_param_len = 10;
+  //char str_param[str_param_len];
+  //strncpy(str_param_len, res->str_val, str_param_len);
+  if (strcmp("yuv422", res->str_val) == 0) {
+    //
+    ESP_LOGD(TAG, "Switch pixel format to YUV422");
+    s_pixel_format = CAMERA_PF_YUV422;
+    handle_camera_config_chg(true);
+  } else if (strcmp("rgb565", res->str_val) == 0) {
+    //
+    ESP_LOGD(TAG, "Switch pixel format to RGB565");
+    s_pixel_format = CAMERA_PF_RGB565;
+    handle_camera_config_chg(true);
+  }
+  //filename[FILENAME_LEN - 1] = '\0';
+  return SARG_ERR_SUCCESS;
+}
+
+static int  ov7670_framerate_cb(const sarg_result *res) {
+  int framerate = 0;
+  framerate = res->int_val;
+  ESP_LOGD(TAG, "Switch framerate to %dFPS",framerate);
+  sensor_t* s_sensor = get_cam_sensor();
+  if (s_sensor != NULL) {
+    // this framerate parameter is a hack, openmv params are different
+    if (framerate == 14) s_sensor->set_framerate(s_sensor,0);
+    if (framerate == 15) s_sensor->set_framerate(s_sensor,1);
+    if (framerate == 25) s_sensor->set_framerate(s_sensor,2);
+    if (framerate == 30) s_sensor->set_framerate(s_sensor,3);
+  //  handle_camera_config_chg(true);
+  }
+  return SARG_ERR_SUCCESS;
+}
+
+static int  ov7670_colorbar_cb(const sarg_result *res) {
+
+  bool onoff = false;
+  if (res->int_val == 1) onoff = true;
+  config.test_pattern_enabled = onoff;
+  sensor_t* s_sensor = get_cam_sensor();
+  if (s_sensor != NULL) {
+      ESP_LOGD(TAG, "Set Colorbar (Test Pattern) %d",config.test_pattern_enabled);
+      s_sensor->set_colorbar(s_sensor, config.test_pattern_enabled);
+  }
+  handle_camera_config_chg(false);
+  return SARG_ERR_SUCCESS;
+}
+
+
+/*
+
+static int  ov7670_saturation_cb(const sarg_result *res) {
+  int level = 0;
+  level = res->int_val;
+  ESP_LOGD(TAG, "Switch saturation (0-256) to %d",level);
+  sensor_t* s_sensor = get_cam_sensor();
+  if (s_sensor != NULL) {
+    s_sensor->set_saturation(s_sensor,level);
+  }
+  return SARG_ERR_SUCCESS;
+}
+
+static int  ov7670_hue_cb(const sarg_result *res) {
+  int level = 0;
+  level = res->int_val;
+  ESP_LOGD(TAG, "Switch saturation (-180 to 180) to %d",level);
+  sensor_t* s_sensor = get_cam_sensor();
+  if (s_sensor != NULL) {
+    s_sensor->set_hue(s_sensor,level);
+  }
+  return SARG_ERR_SUCCESS;
+}
+
+static int  ov7670_brightness_cb(const sarg_result *res) {
+  int level = 0;
+  level = res->int_val;
+  ESP_LOGD(TAG, "Switch brightness (-4 to 4) to %d",level);
+  sensor_t* s_sensor = get_cam_sensor();
+  if (s_sensor != NULL) {
+    s_sensor->set_brightness(s_sensor,level);
+  }
+  return SARG_ERR_SUCCESS;
+}
+
+static int  ov7670_contrast_cb(const sarg_result *res) {
+  int level = 0;
+  level = res->int_val;
+  ESP_LOGD(TAG, "Switch contrast (-4 to 4) to %d",level);
+  sensor_t* s_sensor = get_cam_sensor();
+  if (s_sensor != NULL) {
+    s_sensor->set_contrast(s_sensor,level);
+  }
+  return SARG_ERR_SUCCESS;
+}
+
+
+static int  ov7670_hflip_cb(const sarg_result *res) {
+  //set_vflip
+  bool onoff = false;
+  if (res->int_val == 1) onoff = true;
+  sensor_t* s_sensor = get_cam_sensor();
+  if (s_sensor != NULL) {
+      ESP_LOGD(TAG, "Set hflip = %d",onoff);
+      s_sensor->set_hmirror(s_sensor, onoff);
+  }
+  //handle_camera_config_chg(false);
+  return SARG_ERR_SUCCESS;
+}
+
+static int  ov7670_vflip_cb(const sarg_result *res) {
+  bool onoff = false;
+  if (res->int_val == 1) onoff = true;
+  sensor_t* s_sensor = get_cam_sensor();
+  if (s_sensor != NULL) {
+      ESP_LOGD(TAG, "Set vflip = %d",onoff);
+      s_sensor->set_vflip(s_sensor, onoff);
+  }
+  return SARG_ERR_SUCCESS;
+}
+
+
+static int say_cb(const sarg_result *res)
+{
+
+	int length = 0;
+  length += sprintf(telnet_cmd_response_buff+length, "you say: %s\n", res->str_val);
+	ESP_LOGD(TAG," SAYCB: %s",telnet_cmd_response_buff);
+
+  telnet_esp32_sendData((uint8_t *)telnet_cmd_response_buff, strlen(telnet_cmd_response_buff));
+
+  return SARG_ERR_SUCCESS;
+}
+*/
+
+/*
+static int count_cb(const sarg_result *res)
+{
+    int i;
+    printf("counting: ");
+    for(i = 0; i < res->int_val; ++i) {
+        printf("%d", i + 1);
+        if(i + 1 != res->int_val)
+            printf(",");
+    }
+    printf("\n");
+    return SARG_ERR_SUCCESS;
+}
+
+static int file_cb(const sarg_result *res)
+{
+    got_file = 1;
+		int FILENAME_LEN = 256;
+		char filename[256];
+    strncpy(filename, res->str_val, FILENAME_LEN);
+    filename[FILENAME_LEN - 1] = '\0';
+    return SARG_ERR_SUCCESS;
+}
+static int root_cb(const sarg_result *res)
+{
+//    printf("%f\n", sqrt(res->double_val));
+    return SARG_ERR_SUCCESS;
+}
+
+*/
+
+const static sarg_opt my_opts[] = {
+    {"h", "help", "show help text", BOOL, help_cb},
+    {"v", "stats", "system stats (0=mem,1=tasks)", INT, sys_stats_cb},
+/*
+    {NULL, "clock", "set camera xclock frequency", INT,NULL},
+    {NULL, "pixformat", "set pixel format (yuv, rgb565)", STRING,NULL},
+    {NULL, "framerate", "set framerate (14,15,25,30)", INT,NULL},
+    {NULL, "saturation", "set saturation (1-256)", INT,NULL},
+    {NULL, "hue", "set hue (1-256)", INT,NULL},
+    {NULL, "brightness", "set brightness", INT,NULL},
+    {NULL, "exposure", "count up to this number", INT,NULL},
+    {NULL, "colorbar", "set test pattern (true/false)", BOOL,NULL},
+    {NULL, "hflip", "flip horizontal (true/false)", BOOL,NULL},
+    {NULL, "vflip", "flip vertical (true/false)", BOOL,NULL},
+*/
+    {NULL, "clock", "set camera xclock frequency", INT, ov7670_xclck_cb},
+    {NULL, "pixformat", "set pixel format (yuv422, rgb565)", STRING, ov7670_pixformat_cb},
+    {NULL, "framerate", "set framerate (14,15,25,30)", INT, ov7670_framerate_cb},
+    {NULL, "colorbar", "set test pattern (0=off/1=on)", INT, ov7670_colorbar_cb},
+/*
+    {NULL, "saturation", "set saturation (1-256)", INT, ov7670_saturation_cb},
+    {NULL, "hue", "set hue (-180 to 180)", INT, ov7670_hue_cb},
+    {NULL, "brightness", "set brightness (-4 to 4)", INT, ov7670_brightness_cb},
+    {NULL, "contrast", "set contrast (-4 to 4)", INT, ov7670_contrast_cb},
+    {NULL, "hflip", "flip horizontal (0=off/1=on)", INT, ov7670_hflip_cb},
+    {NULL, "vflip", "flip vertical (0=off/1=on)", INT, ov7670_vflip_cb},
+*/
+//    {NULL, "root", "calculate square root of this number", DOUBLE, root_cb},
+//    {NULL, "say", "print the given text", STRING, say_cb},
+//    {"f", "file", "file to read arguments from", STRING, file_cb},
+    {NULL, NULL, NULL, INT, NULL}
+};
+
+
+static int handle_command(uint8_t *cmdLine, size_t len)
+{
+    int ret = sarg_init(&root, my_opts, "ESPILICAM");
+    assert(ret == SARG_ERR_SUCCESS);
+
+		// lots of redundant code here! //strcpy or memcpy would suffice
+		size_t cmd_len = len;
+		if (len > CMD_BUFFER_LEN) cmd_len = CMD_BUFFER_LEN;
+		for (int i = 0; i < cmd_len; i++)
+			telnet_cmd_buffer[i] = *(cmdLine+i);
+		telnet_cmd_buffer[cmd_len-1] = '\0';
+
+		ESP_LOGD(TAG, "Processing telnet_cmd_buffer len=%d - contents=%s",cmd_len,(char*)telnet_cmd_buffer);
+
+    if(telnet_cmd_buffer != NULL) {
+			  // next command will call sarg_parse and call callbacks as needed...
+        ret = sarg_parse_command_buffer(&root, telnet_cmd_buffer, cmd_len);
+        if(ret != SARG_ERR_SUCCESS) {
+					  ESP_LOGE(TAG, "Command parsing failed");
+            sarg_destroy(&root);
+            return -1;
+        }
+				// command has been parsed and executed!
+				ESP_LOGD(TAG, "Command parser completed...");
+
+    }
+    sarg_destroy(&root);
+    return 0;
+}
+
+
+
+
 
 
 
@@ -419,6 +678,9 @@ static void initialise_wifi(void)
     ESP_LOGI(TAG, "Connected");
 }
 
+
+// COMMAND PARSER
+
 uint8_t getHexVal(char c)
 {
    if(c >= '0' && c <= '9')
@@ -427,49 +689,262 @@ uint8_t getHexVal(char c)
      return (uint8_t)(c-'A'+10);
 }
 
-static void push_framebuffer_to_tft() {
+
+static void recvData(uint8_t *buffer, size_t size) {
+	char cmdRecptMessage[100];
+	int length = 0;
+	ESP_LOGD(TAG, "We received: %.*s", size, buffer);
+	handle_command(buffer, size);
+  // have to wait for callback for actual response.. echo recpt for now
+	length += sprintf(cmdRecptMessage, "%s","#: ");
+	if (strlen(telnet_cmd_response_buff) > 0)
+	  sprintf(cmdRecptMessage+length, "%s\n", telnet_cmd_response_buff);
+
+	telnet_esp32_sendData((uint8_t *)cmdRecptMessage, strlen(cmdRecptMessage));
+}
+
+static void telnetTask(void *data) {
+	ESP_LOGD(TAG, ">> telnetTask");
+	telnet_esp32_listenForClients(recvData);
+	ESP_LOGD(TAG, "<< telnetTask");
+	vTaskDelete(NULL);
+}
+
+
+// DISPLAY LOGIC
+
+static inline uint8_t clamp(int n)
+{
+    n = n>255 ? 255 : n;
+    return n<0 ? 0 : n;
+}
+
+// Pass 8-bit (each) R,G,B, get back 16-bit packed color
+static inline uint16_t ILI9341_color565(uint8_t r, uint8_t g, uint8_t b) {
+  return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+}
+
+uint16_t get_grayscale_pixel_as_565(uint8_t pix) {
+    // R = (img[n]&248)<<8; // 5 bit cao cua Y
+    // G = (img[n]&252)<<3; // 6 bit cao cua Y
+    // B = (img[n]&248)>>3; // 5 bit cao cua Y
+    uint16_t graypixel=((pix&248)<<8)|((pix&252)<<3)|((pix&248)>>3);
+    return graypixel;
+
+}
+
+// integers instead of floating point...
+static inline uint16_t fast_yuv_to_rgb565(int y, int u, int v) {
+
+int a0 = 1192 * (y - 16);
+int a1 = 1634 * (v - 128);
+int a2 = 832 * (v - 128);
+int a3 = 400 * (u - 128);
+int a4 = 2066 * (u - 128);
+int r = (a0 + a1) >> 10;
+int g = (a0 - a2 - a3) >> 10;
+int b = (a0 + a4) >> 10;
+return ILI9341_color565(clamp(r),clamp(g),clamp(b));
+
+}
+
+// fast but uses floating points...
+static inline uint16_t fast_pascal_to_565(int Y, int U, int V) {
+  uint8_t r, g, b;
+  r = clamp(1.164*(Y-16) + 1.596*(V-128));
+  g = clamp(1.164*(Y-16) - 0.392*(U-128) - 0.813*(V-128));
+  b = clamp(1.164*(Y-16) + 2.017*(U-128));
+  return ILI9341_color565(r,g,b);
+}
+
+//Warning: This gets squeezed into IRAM.
+volatile static uint32_t *currFbPtr __attribute__ ((aligned(4))) = NULL;
+
+inline uint8_t unpack(int byteNumber, uint32_t value) {
+    return (value >> (byteNumber * 8));
+}
+
+
+static void convert_yuv_line_to_565(uint8_t *srcline, uint8_t *destline, int byte_len) {
+
+  uint16_t pixel565 = 0;
+  uint16_t pixel565_2 = 0;
+	for (int current_byte_pos = 0; current_byte_pos < byte_len; current_byte_pos += 4)
+	{
+       uint8_t y1, y2, u, v;
+       y1 = srcline[current_byte_pos+3];
+       v = srcline[current_byte_pos+2];
+       y2 = srcline[current_byte_pos+1];
+       u = srcline[current_byte_pos];
+
+       pixel565 = fast_yuv_to_rgb565(y1,u,v);
+       //pixel565 = __bswap_16(pixel565);
+       pixel565_2 = fast_yuv_to_rgb565(y2,u,v);
+       //pixel565 = __bswap_16(pixel565_2);
+
+       destline[0] = pixel565 & 0xFF00 >> 8;
+       destline[1] = pixel565 & 0xFF;
+       //memcpy(destline, &pixel565, sizeof(uint16_t));
+       destline +=2;
+
+       destline[0] = pixel565_2 & 0xFF00 >> 8;
+       destline[1] = pixel565_2 & 0xFF;
+       //memcpy(destline, &pixel565_2, sizeof(uint16_t));
+       destline +=2;
+
+  }
+
+}
+
+static void convert_ili565_32bit_line_to_565(uint32_t *srcline, uint8_t *destline) {
+
+  uint16_t pixel565 = 0;
+  uint16_t pixel565_2 = 0;
+  uint32_t long2px = 0;
+  uint16_t *sptr;
+  int current_src_pos=0, current_dest_pos=0;
+	for (int current_pixel_pos = 0; current_pixel_pos < 320; current_pixel_pos += 2)
+	{
+        current_src_pos = current_pixel_pos/2;
+        long2px = srcline[current_src_pos];
+
+        pixel565 =  (unpack(2,long2px) << 8) | unpack(3,long2px);
+        pixel565_2 = (unpack(0,long2px) << 8) | unpack(1,long2px);
+
+        sptr = &destline[current_dest_pos];
+        *sptr = pixel565;
+        sptr = &destline[current_dest_pos+2];
+        *sptr = pixel565_2;
+        current_dest_pos += 4;
+  }
+}
+
+
+
+static void convert_yuv_32bit_line_to_565(uint32_t *srcline, uint8_t *destline) {
+
+  uint16_t pixel565 = 0;
+  uint16_t pixel565_2 = 0;
+  uint32_t long2px = 0;
+  uint16_t *sptr;
+  int current_src_pos=0, current_dest_pos=0;
+	for (int current_pixel_pos = 0; current_pixel_pos < 320; current_pixel_pos += 2)
+	{
+        uint8_t y1, y2, u, v;
+        current_src_pos = current_pixel_pos/2;
+        long2px = srcline[current_src_pos];
+        y1 = unpack(0,long2px);
+        v = unpack(1,long2px);;
+        y2 = unpack(2,long2px);
+        u = unpack(3,long2px);
+
+        pixel565 = fast_yuv_to_rgb565(y1,u,v);
+        pixel565_2 = fast_yuv_to_rgb565(y2,u,v);
+
+        sptr = &destline[current_dest_pos];
+        *sptr = pixel565;
+        sptr = &destline[current_dest_pos+2];
+        *sptr = pixel565_2;
+        current_dest_pos += 4;
+  }
+}
+
+void spi_lcd_wait_finish() {
+	xSemaphoreTake(dispDoneSem, portMAX_DELAY);
+}
+
+void spi_lcd_send() {
+	xSemaphoreGive(dispSem);
+}
+
+#define ILI_WIDTH 320
+#define ILI_HEIGHT 240
+
+static void push_framebuffer_to_tft(void *pvParameters) {
   uint16_t line[2][320];
-  int x, y, frame=0;
+  int x, y; //, frame=0;
   //Indexes of the line currently being sent to the LCD and the line we're calculating.
   int sending_line=-1;
   int calc_line=0;
 
-  uint8_t* fb = camera_get_fb();
-// handle reset of re-init to change pxclk
-  if (fb == NULL) return;
-
-  // access the array as 16-bit chunks of raw rgb565 hopefully
-  uint16_t* fb_ref = (uint16_t*)&fb;
-  int ili_width = 320;
-  int ili_height = 240;
+  uint32_t* fbl = camera_get_fb();
 
   int width = camera_get_fb_width();
   int height =  camera_get_fb_height();
   int max_fb_pos = width * height;
   uint16_t pixel565 = 0;
+  uint16_t pixel565_2 = 0;
+  int current_byte_pos = 0, current_fb_pixel_pos = 0;
+
+  xSemaphoreGive(dispDoneSem);
+
   while(1) {
-     frame++;
-     for (y=0; y<ili_height; y++) {
-        //Calculate a line.
-        for (x=0; x<ili_width; x++) {
-            // wrap pixels around...
-            int current_fb_pos = ((y*width)+x+tft_offset) % max_fb_pos;
-            //line[calc_line][x]=((x<<3)^(y<<3)^(frame+x*y));
-            pixel565 = 0xAABC; //
-            /*
-            if (y < height) {
-              if (x < width)
-                if (camera_get_fb() != NULL)
-                 pixel565 = fb_ref[(y*width)+x];
+  //   frame++;
+     xSemaphoreTake(dispSem, portMAX_DELAY);
+ //		printf("Display task: frame.\n");
+     bool reset_loop = false;
+     for (y=0; y<ILI_HEIGHT; y++) {
+        //Calculate a line, operate on 2 pixels at a time...
+        for (x=0; x<ILI_WIDTH; x+=2) {
+
+            // TODO: display pause logic cleanup
+
+            if (PAUSE_DISPLAY) {
+              while (PAUSE_DISPLAY) { vTaskDelay(30 / portTICK_RATE_MS); }
+              // reset FB, cam may have re-init'ed
+              fbl = camera_get_fb();
+              reset_loop = true;
             }
-            */
-            // use new offset logic for 565 ....
-            if (camera_get_fb() != NULL)
-              //if (current_fb_pos < max_fb_pos)
-                pixel565 = fb_ref[current_fb_pos];
+            if (reset_loop) break;
 
+            // wrap pixels around...
+            current_fb_pixel_pos = ((y*width)+x+tft_offset) % max_fb_pos;
+            // note, the next line is done to enable shifting the offset
+            // TODO: remove test mod %
+            current_byte_pos = current_fb_pixel_pos/2+(tft_offset % 4);
 
-            line[calc_line][x]= pixel565;
+            if (fbl != NULL) {
+              if (s_pixel_format == CAMERA_PF_YUV422) {
+                uint32_t long2px = 0;
+                uint8_t y1, y2, u, v;
+
+                long2px = fbl[current_byte_pos];
+                y1 = unpack(0,long2px);
+                v = unpack(1,long2px);;
+                y2 = unpack(2,long2px);
+                u = unpack(3,long2px);
+
+                // UYVY (Reverse order)
+                /*
+                y1 = fb[current_byte_pos+3];
+                v = fb[current_byte_pos+2];
+                y2 = fb[current_byte_pos+1];
+                u = fb[current_byte_pos];
+                */
+
+                pixel565 = fast_yuv_to_rgb565(y1,u,v);
+                pixel565_2 = fast_yuv_to_rgb565(y2,u,v);
+                // swap bytes for ILI
+                line[calc_line][x]= __bswap_16(pixel565);
+                line[calc_line][x+1]= __bswap_16(pixel565_2);
+              } else {
+                // rgb565 direct from OV7670 to ILI9341
+                // best to swap bytes here instead of bswap
+                uint32_t long2px = 0;
+                uint8_t y1, y2, u, v;
+
+                long2px = fbl[current_byte_pos];
+                pixel565 =  (unpack(3,long2px) << 8) | unpack(2,long2px);
+                pixel565_2 = (unpack(1,long2px) << 8) | unpack(0,long2px);
+
+                /*
+                pixel565 =  (fb[current_byte_pos] << 8) |  fb[current_byte_pos+1]; //(fb[currBytePos] & 0xFF00 >> 8) | (p565 = fb[currBytePos+1] & 0x00FF);
+                pixel565_2 = (fb[current_byte_pos+2] << 8) |  fb[current_byte_pos+3];
+                */
+                line[calc_line][x]= pixel565;
+                line[calc_line][x+1]= pixel565_2;
+              }
+            }
         }
         //Finish up the sending process of the previous line, if any
         if (sending_line!=-1) send_line_finish(spi);
@@ -481,11 +956,15 @@ static void push_framebuffer_to_tft() {
         //The line is queued up for sending now; the actual sending happens in the
         //background. We can go on to calculate the next line as long as we do not
         //touch line[sending_line]; the SPI sending process is still reading from that.
-      }
-      vTaskDelay(30 / portTICK_RATE_MS);
- }
+      } // end for (y=0; y<ili_height; y++)
 
+      // TODO: check that line is actually sent before giving semaphore!
+      vTaskDelay(30 / portTICK_RATE_MS);
+
+      xSemaphoreGive(dispDoneSem);
+  } // end while(1)
 }
+
 
 
 static void http_server_netconn_serve(struct netconn *conn)
@@ -513,294 +992,11 @@ static void http_server_netconn_serve(struct netconn *conn)
           netconn_write(conn, http_hdr, sizeof(http_hdr) - 1,
                     NETCONN_NOCOPY);
             //check if a command has been requested.
-          if (buf[5] == 'z') {
-            ESP_LOGD(TAG, "Command mode.");
-
+            //MOVED TO TELNET CMD PARSER
             bool reinit_reqd = true;
-            if ((buf[6] == 'f')) {
-
-              ESP_LOGD(TAG, "Setting OV7670 extra reg.");
-              sensor_t* s_sensor = get_cam_sensor();
-              if (s_sensor != NULL)
-                //setup_ov7670_tft(s_sensor);
-                /*
-                err = camera_run();
-              if (err != ESP_OK) {
-                  ESP_LOGD(TAG, "Camera capture failed with error = %d", err);
-              } else {
-                  ESP_LOGD(TAG, "Done, rendering to TFT...");
-                  //push_framebuffer_to_tft();
-                  //char outp[] = "Pushed image to FB.\r\n\r\n";
-                  //netconn_write(conn, outp, sizeof(outp) - 1,
-                  //          NETCONN_NOCOPY);
-                  // just let it be..
-                  reinit_reqd = false;
-              }
-              */
-              reinit_reqd = false;
-            }
-            if ((buf[6] == 'X')) {
-              sensor_t* s_sensor = get_cam_sensor();
-              if (s_sensor != NULL)
-                //setup_ov7670_tft(s_sensor);
-                // skip out of there...!!
-                //return;
-                //transformFramebuffer888to565();
-                reinit_reqd = false;
-            }
-            if ((buf[6] == 'I')) {
-
-                //push_framebuffer_to_tft();
-                // skip out of there...!!
-                //return;
-                sensor_t* s_sensor = get_cam_sensor();
-                if (s_sensor != NULL)
-                //Ov7670(s_sensor);
-                //init();
-
-                reinit_reqd = false;
-            }
-            if ((buf[6] == 'O') && (buf[7] == '=')) {
-
-                int n1 = buf[8] - '0';
-                int n2 = buf[8] - '0';
-                int n3 = buf[8] - '0';
-                tft_offset = (n1 * 100)+(n2*10)+(n3*1);
-
-              //offset = level
-              //sensor_t* s_sensor = get_cam_sensor();
-              //if (s_sensor != NULL)
-
-              //Ov7670(s_sensor);
-
-              //gamma_set();
-              //AGC_set();
-              //magic_set();
-
-                // skip out of there...!!
-                //return;
-                reinit_reqd = false;
-            }
-            if ((buf[6] == 'T') && (buf[7] == '=')) {
-                //int level = buf[8] - '0';
-
-
-                sensor_t* s_sensor = get_cam_sensor();
-
-                bool s_yuv_test_mode = false;
-                bool s_yuv_reverse_bytes = false;
-                bool s_raw_bytes_only = false;
-                bool s_gbr_rgb_order = false;
-                int s_highspeed_sampling_mode = 0;
-                bool s_test_tft_filter = false;
-
-                if (buf[8]=='Y') s_yuv_test_mode = true;
-                if (buf[9]=='Y') s_yuv_reverse_bytes = true;
-                if (buf[10]=='Y') s_raw_bytes_only = true;
-                if (buf[11]=='Y') s_gbr_rgb_order = true;
-
-                if (buf[12] == '1') s_highspeed_sampling_mode = 1;
-                else if (buf[12] == '2') s_highspeed_sampling_mode = 2;
-                if (buf[13] == 'Y') s_test_tft_filter = true;
-
-
-                ESP_LOGD(TAG, "Set Test Bytes: %d,%d,%d,%d,%d,%d",s_yuv_test_mode,  s_yuv_reverse_bytes,
-                                    s_raw_bytes_only,  s_gbr_rgb_order,  s_highspeed_sampling_mode, s_test_tft_filter);
-
-                if (s_sensor != NULL) {
-
-                   set_test_modes( s_yuv_test_mode,  s_yuv_reverse_bytes,
-                                       s_raw_bytes_only,  s_gbr_rgb_order,  s_highspeed_sampling_mode, s_test_tft_filter);
-
-
-                }
-                reinit_reqd = true;
-            }
-            if ((buf[6] == 'S') && (buf[7] == '=')) {
-
-               int level = buf[8] - '0';
-                ESP_LOGD(TAG, "Set framesize: %x",level);
-                if (level == 0 ) config.frame_size = FRAMESIZE_QCIF;
-                if (level == 1 ) config.frame_size = FRAMESIZE_QVGA;
-                if (level == 2 ) config.frame_size = FRAMESIZE_QQVGA;
-                reinit_reqd = true;
-            }
-            if ((buf[6] == 'R') && (buf[7] == '=')) {
-
-
-                //int level = buf[8] - '0';
-                uint8_t reg = getHexVal(buf[9]) + (getHexVal(buf[8]) << 4);
-                uint8_t regVal = getHexVal(buf[11]) + (getHexVal(buf[10]) << 4);
-
-                ESP_LOGD(TAG, "Set Register: %x=%x",reg,regVal);
-                sensor_t* s_sensor = get_cam_sensor();
-                if (s_sensor != NULL) {
-                  //s_sensor->sensor_write_reg(reg,regVal); //set_register(s_sensor, reg, regVal);
-                  cam_set_sensor_reg( reg, regVal);
-                }
-                reinit_reqd = false;
-            }
-            if ((buf[6] == 'h') && (buf[7] == '=')) {
-                int level = buf[8] - '0';
-                ESP_LOGD(TAG, "Set hflip: %d",level);
-                sensor_t* s_sensor = get_cam_sensor();
-                if (s_sensor != NULL) {
-                  s_sensor->set_vflip(s_sensor, level);
-                }
-                reinit_reqd = false;
-            }
-            if ((buf[6] == 'v') && (buf[7] == '=')) {
-                int level = buf[8] - '0';
-                ESP_LOGD(TAG, "Set vflip: %d",level);
-                sensor_t* s_sensor = get_cam_sensor();
-                if (s_sensor != NULL) {
-                  //s_sensor->set_saturation(s_sensor, level);
-                  s_sensor->set_hmirror(s_sensor,level);
-                }
-                reinit_reqd = false;
-            }
-            if ((buf[6] == 's') && (buf[7] == '=')) {
-                int level = buf[8] - '0';
-                ESP_LOGD(TAG, "Set Saturation: %d",level);
-                sensor_t* s_sensor = get_cam_sensor();
-                if (s_sensor != NULL) {
-                  s_sensor->set_saturation(s_sensor, level);
-                }
-                reinit_reqd = false;
-            }
-            if ((buf[6] == 'c') && (buf[7] == '=')) {
-                int level = buf[8] - '0';
-                ESP_LOGD(TAG, "Set Contrast (1-8): %d",level);
-                sensor_t* s_sensor = get_cam_sensor();
-                if (s_sensor != NULL) {
-                  s_sensor->set_contrast(s_sensor, level);
-                }
-                reinit_reqd = false;
-            }
-            if ((buf[6] == 'b') && (buf[7] == '=')) {
-                int level = buf[8] - '0';
-                ESP_LOGD(TAG, "Set brightness(1-8): %d",level);
-                sensor_t* s_sensor = get_cam_sensor();
-                if (s_sensor != NULL) {
-                  s_sensor->set_brightness(s_sensor, level);
-                }
-                reinit_reqd = false;
-            }
-            if ((buf[6] == 'w') && (buf[7] == '=')) {
-                int level = buf[8] - '0';
-                ESP_LOGD(TAG, "Set Whitebal 1-0: %d",level);
-                sensor_t* s_sensor = get_cam_sensor();
-                if (s_sensor != NULL) {
-                  s_sensor->set_whitebal(s_sensor, level);
-                }
-                reinit_reqd = false;
-            }
-            if ((buf[6] == 'g') && (buf[7] == '=')) {
-                int level = buf[8] - '0';
-                ESP_LOGD(TAG, "Set gainceiling 1-6: %d",level);
-                sensor_t* s_sensor = get_cam_sensor();
-                if (s_sensor != NULL) {
-                  s_sensor->set_gainceiling(s_sensor, level);
-                }
-                reinit_reqd = false;
-            }
-            if ((buf[6] == 'e') && (buf[7] == '=')) {
-                int level = buf[8] - '0';
-                ESP_LOGD(TAG, "Set exposure_ctrl 1-0: %d",level);
-                sensor_t* s_sensor = get_cam_sensor();
-                if (s_sensor != NULL) {
-                  s_sensor->set_exposure_ctrl(s_sensor, level);
-                }
-                reinit_reqd = false;
-            }
-            if ((buf[6] == 'z') && (buf[7] == '=')) {
-                int level = buf[8] - '0';
-                ESP_LOGD(TAG, "Set gain_ctrl 1-0: %d",level);
-                sensor_t* s_sensor = get_cam_sensor();
-                if (s_sensor != NULL) {
-                  s_sensor->set_gain_ctrl(s_sensor, level);
-                }
-                reinit_reqd = false;
-            }
-
-
-            if (buf[6] == 'q') {
-
-              ESP_LOGD(TAG, "Set Colorbar (Test Pattern) on / off");
-              test_pattern_enabled = !test_pattern_enabled;
-
-              sensor_t* s_sensor = get_cam_sensor();
-              if (s_sensor != NULL) {
-                s_sensor->set_colorbar(s_sensor, test_pattern_enabled);
-              }
-              reinit_reqd = false;
-
-            }
-            if (buf[6] == 'x') {
-              int speed = 0;
-              speed = (buf[7] - '0')*10 + (buf[8] - '0');
-              ESP_LOGD(TAG, "Switch XCLCK to %dMHZ",speed);
-              speed = speed * 1000000;
-              config.xclk_freq_hz = speed;
-              vTaskDelay(100 / portTICK_RATE_MS);
-              reset_xclk(&config);
-              vTaskDelay(100 / portTICK_RATE_MS);
-              reinit_reqd = true;
-
-
-
-            } else if (buf[6] == 'y') {
-              ESP_LOGD(TAG, "Switch Pixelformat to YUV422.");
-              s_pixel_format = CAMERA_PF_YUV422;
-              // switch to YUV
-            } else if (buf[6] == 'r') {
-              if ((buf[7] == '5') && (buf[8] == '6')) {
-                // rgb565
-                ESP_LOGD(TAG, "Switch Pixelformat to RGB565.");
-                s_pixel_format = CAMERA_PF_RGB565;
-              }
-              if ((buf[7] == '5') && (buf[8] == '5')) {
-                // rgb555
-                ESP_LOGD(TAG, "Switch Pixelformat to RGB555.");
-
-                s_pixel_format = CAMERA_PF_RGB555;
-              }
-              if (buf[7] == '4') {
-                // rgb444
-                ESP_LOGD(TAG, "Switch Pixelformat to RGB444.");
-                s_pixel_format = CAMERA_PF_RGB444;
-              }
-              // swithc to grayscale
-            } else if (buf[6] == 'g') {
-              ESP_LOGD(TAG, "Switch Pixelformat to GRAYSCALE.");
-              s_pixel_format = CAMERA_PF_GRAYSCALE;
-            } else {
-              ESP_LOGD(TAG, "Unknown command");
-            }
-
-            if (reinit_reqd) {
-              ESP_LOGD(TAG, "Reconfiguring camera...");
-              esp_err_t err;
-              vTaskDelay(100 / portTICK_RATE_MS);
-              err = reset_pixformat();
-              config.pixel_format = s_pixel_format;
-              err = camera_init(&config);
-              if (err != ESP_OK) {
-                  ESP_LOGE(TAG, "Camera init failed with error 0x%x", err);
-                  //return;
-              }
-              char cb[] = "Reinit Camera...\r\n\r\n";
-              err = netconn_write(conn, cb, sizeof(cb) - 1,
-                  NETCONN_NOCOPY);
-              return;
-              vTaskDelay(100 / portTICK_RATE_MS);
-            }
-
-            ESP_LOGI(TAG, "Free heap: %u", xPortGetFreeHeapSize());
-            ESP_LOGI(TAG, "Camera ready");
 
            //check if a stream is requested.
-          } else if (buf[5] == 's') {
+           if (buf[5] == 's') {
                 //Send mjpeg stream header
                 err = netconn_write(conn, http_stream_hdr, sizeof(http_stream_hdr) - 1,
                     NETCONN_NOCOPY);
@@ -809,31 +1005,62 @@ static void http_server_netconn_serve(struct netconn *conn)
                 //Run while everyhting is ok and connection open.
                 while(err == ERR_OK) {
                     ESP_LOGD(TAG, "Capture frame");
+
+                    PAUSE_DISPLAY = true;
                     err = camera_run();
+                    PAUSE_DISPLAY = false;
+
+                    spi_lcd_send();
+                    spi_lcd_wait_finish();
+
+
+
                     if (err != ESP_OK) {
                         ESP_LOGD(TAG, "Camera capture failed with error = %d", err);
                     } else {
                         ESP_LOGD(TAG, "Done");
                         //Send jpeg header
-                        if(s_pixel_format == CAMERA_PF_RGB565) {
+                        if((s_pixel_format == CAMERA_PF_RGB565) || (s_pixel_format == CAMERA_PF_YUV422)) {
                             err = netconn_write(conn, http_bitmap_hdr, sizeof(http_bitmap_hdr) - 1,
                                 NETCONN_NOCOPY);
-                            char *bmp = bmp_create_header(camera_get_fb_width(), camera_get_fb_height());
-                            err = netconn_write(conn, bmp, sizeof(bitmap), NETCONN_NOCOPY);
+                            char *bmp = bmp_create_header565(camera_get_fb_width(), camera_get_fb_height());
+                            err = netconn_write(conn, bmp, sizeof(bitmap565), NETCONN_NOCOPY);
                             free(bmp);
                         }
                         else
                             err = netconn_write(conn, http_jpg_hdr, sizeof(http_jpg_hdr) - 1,
                                 NETCONN_NOCOPY);
-                        //Send frame
-                        err = netconn_write(conn, camera_get_fb(), camera_get_data_size(),
-                            NETCONN_NOCOPY);
+
+                        if ((s_pixel_format == CAMERA_PF_YUV422)) {
+                          //Send frame
+                            uint8_t s_line[320*2];
+                            uint32_t *fbl;
+                            for (int i = 0; i < 240; i++) {
+                              fbl = &currFbPtr[(i*320)/2];  //(i*(320*2)/4); // 4 bytes for each 2 pixel / 2 byte read..
+                              convert_yuv_32bit_line_to_565(fbl, s_line);
+                              err = netconn_write(conn, s_line, 320*2,
+                                  NETCONN_COPY);
+                              //vTaskDelay(1); // just in case! - but will slow down kBps
+                            }
+                        } else  {
+                            uint8_t s_line[320*2];
+                            uint32_t *fbl;
+                            for (int i = 0; i < 240; i++) {
+                              fbl = &currFbPtr[(i*320)/2];  //(i*(320*2)/4); // 4 bytes for each 2 pixel / 2 byte read..
+                              convert_ili565_32bit_line_to_565(fbl, s_line);
+                              err = netconn_write(conn, s_line, 320*2,
+                                  NETCONN_COPY);
+                              //vTaskDelay(1); // just in case! - but will slow down kBps
+                            }
+                        }
+
                         if(err == ERR_OK)
                         {
                             //Send boundary to next jpeg
                             err = netconn_write(conn, http_stream_boundary,
                                     sizeof(http_stream_boundary) -1, NETCONN_NOCOPY);
                         }
+                        vTaskDelay(200 / portTICK_RATE_MS);
                     }
                 }
                 ESP_LOGD(TAG, "Stream ended.");
@@ -859,8 +1086,8 @@ static void http_server_netconn_serve(struct netconn *conn)
 
                     netconn_write(conn, http_bitmap_hdr, sizeof(http_bitmap_hdr) - 1, NETCONN_NOCOPY);
                     if (memcmp(&buf[5], "bmp", 3) == 0) {
-                        char *bmp = bmp_create_header(camera_get_fb_width(), camera_get_fb_height());
-                        err = netconn_write(conn, bmp, sizeof(bitmap), NETCONN_COPY);
+                        char *bmp = bmp_create_header565(camera_get_fb_width(), camera_get_fb_height());
+                        err = netconn_write(conn, bmp, sizeof(bitmap565), NETCONN_COPY);
                         free(bmp);
                     }
                     else {
@@ -872,11 +1099,22 @@ static void http_server_netconn_serve(struct netconn *conn)
 
                 } else if (s_pixel_format == CAMERA_PF_YUV422) {
                   if (memcmp(&buf[5], "bmp", 3) == 0) {
+
+                      ESP_LOGD(TAG, "Converting YUV framebuffer to RGB565 requested.");
+                      PAUSE_DISPLAY = true;
+                      // doh!!! iss not werrrrrkiiiinn!!!@
+                      //convert_yuv_framebuffer_to_565();
+                      PAUSE_DISPLAY = false;
+                      // send YUV converted to 565 2bpp for now...
                       netconn_write(conn, http_bitmap_hdr, sizeof(http_bitmap_hdr) - 1, NETCONN_NOCOPY);
-                      char *bmp = bmp_create_header(camera_get_fb_width(), camera_get_fb_height());
-                      err = netconn_write(conn, bmp, sizeof(bitmap), NETCONN_COPY);
+                      char *bmp = bmp_create_header565(camera_get_fb_width(), camera_get_fb_height());
+                      err = netconn_write(conn, bmp, sizeof(bitmap565), NETCONN_COPY);
+
+                      //char *bmp = bmp_create_header(camera_get_fb_width(), camera_get_fb_height());
+                      //err = netconn_write(conn, bmp, sizeof(bitmap), NETCONN_COPY);
                       free(bmp);
                   } else {
+
                     char outstr[120];
                     get_image_mime_info_str(outstr);
                     netconn_write(conn, outstr, sizeof(outstr) - 1, NETCONN_NOCOPY);
@@ -887,20 +1125,22 @@ static void http_server_netconn_serve(struct netconn *conn)
                   char outstr[120];
                   get_image_mime_info_str(outstr);
                   netconn_write(conn, outstr, sizeof(outstr) - 1, NETCONN_NOCOPY);
-
                 }
 
+                if (!reinit_reqd) {
+                  ESP_LOGD(TAG, "Image requested.");
+                  PAUSE_DISPLAY = true;
+                  err = camera_run();
+                  PAUSE_DISPLAY = false;
+                  if (err != ESP_OK) {
+                      ESP_LOGD(TAG, "Camera capture failed with error = %d", err);
+                  } else {
+                      ESP_LOGD(TAG, "Done");
+                      //Send jpeg
+                      err = netconn_write(conn, camera_get_fb(), camera_get_data_size(),
+                          NETCONN_NOCOPY);
 
-                ESP_LOGD(TAG, "Image requested.");
-                err = camera_run();
-                if (err != ESP_OK) {
-                    ESP_LOGD(TAG, "Camera capture failed with error = %d", err);
-                } else {
-                    ESP_LOGD(TAG, "Done");
-                    //Send jpeg
-                    err = netconn_write(conn, camera_get_fb(), camera_get_data_size(),
-                        NETCONN_NOCOPY);
-
+                  }
                 }
             }
         }
@@ -931,50 +1171,30 @@ static void http_server(void *pvParameters)
     netconn_delete(conn);
 }
 
-
-
-/*
-void lcd_debug(void *pvParameters)
-{
-	tft.begin();
-	tft.fillScreen(ILI9341_GREEN);
-	//setupUI();
-//	vTaskDelete(NULL);
-}
-*/
-
-
 void app_main()
 {
+    size_t free8start, free32start, free8, free32;
+
     esp_log_level_set("wifi", ESP_LOG_WARN);
     esp_log_level_set("gpio", ESP_LOG_WARN);
 
     nvs_flash_init();
 
-    //gpio_set_direction(PIN_NUM_MOSI, GPIO_MODE_OUTPUT);
-    //gpio_set_direction(PIN_NUM_CLK, GPIO_MODE_OUTPUT);
+    ESP_LOGI(TAG,"Starting ESPILICAM");
 
-/*
-//CLK
-gpio_pad_select_gpio(GPIO_NUM_14);
-gpio_set_direction(GPIO_NUM_14, GPIO_MODE_INPUT);
-PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTMS_U, 1); //gpio_matrix_in(GPIO_NUM_14, HSPICLK_IN_IDX,0);
+    // report memory at startup
+    ESP_LOGI(TAG,"Starting Memory Allocation for Display");
 
-//MISO
-gpio_pad_select_gpio(GPIO_NUM_12);
-gpio_set_direction(GPIO_NUM_12, GPIO_MODE_OUTPUT);
-PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTDI_U, 1); //gpio_matrix_out(GPIO_NUM_12, HSPIQ_OUT_IDX,0,0);
+    free8=xPortGetFreeHeapSizeCaps(MALLOC_CAP_8BIT);
+    free32=xPortGetFreeHeapSizeCaps(MALLOC_CAP_32BIT);
+    ESP_LOGI(TAG, "Free 8bit-capable memory: %dK, 32-bit capable memory %dK\n", free8, free32);
 
-//MOSI
-gpio_pad_select_gpio(GPIO_NUM_13);
-gpio_set_direction(GPIO_NUM_13, GPIO_MODE_INPUT);
-PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTCK_U, 1); //gpio_matrix_in(GPIO_NUM_13, HSPID_IN_IDX,0);
 
-//CSS
-gpio_pad_select_gpio(GPIO_NUM_15);
-gpio_set_direction(GPIO_NUM_15, GPIO_MODE_INPUT);
-PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTDO_U, 1); //gpio_matrix_in(GPIO_NUM_15, HSPICS0_IN_IDX,0);
-*/
+    ESP_LOGD(TAG, "Allocating Frame Buffer memory...");
+    currFbPtr=pvPortMallocCaps(320*240*2, MALLOC_CAP_32BIT);
+
+    ESP_LOGI(TAG,"Setup ILI9341");
+
     esp_err_t ret;
     spi_bus_config_t buscfg={
         .miso_io_num=PIN_NUM_MISO,
@@ -985,6 +1205,7 @@ PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTDO_U, 1); //gpio_matrix_in(GPIO_NUM_15, HSPICS0
     };
     spi_device_interface_config_t devcfg={
         .clock_speed_hz=10000000,               //Clock out at 10 MHz
+        //.clock_speed_hz=26000000,               //Clock out at 26 MHz. Yes, that's heavily overclocked.
         .mode=0,                                //SPI mode 0
         .spics_io_num=PIN_NUM_CS,               //CS pin
         .queue_size=7,                          //We want to be able to queue 7 transactions at a time
@@ -1002,33 +1223,12 @@ PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTDO_U, 1); //gpio_matrix_in(GPIO_NUM_15, HSPICS0
     ESP_LOGI(TAG, "Call ili_init");
     ili_init(spi);
 
-//    ESP_LOGI(TAG, "Register SPI device with camera.c");
-//    set_tft_spi_device(&spi);
+    dispSem=xSemaphoreCreateBinary();
+    dispDoneSem=xSemaphoreCreateBinary();
 
-    /*
-    camera_config_t config = {
-        .ledc_channel = LEDC_CHANNEL_0,
-        .ledc_timer = LEDC_TIMER_0,
-        .pin_d0 = CONFIG_D0,
-        .pin_d1 = CONFIG_D1,
-        .pin_d2 = CONFIG_D2,
-        .pin_d3 = CONFIG_D3,
-        .pin_d4 = CONFIG_D4,
-        .pin_d5 = CONFIG_D5,
-        .pin_d6 = CONFIG_D6,
-        .pin_d7 = CONFIG_D7,
-        .pin_xclk = CONFIG_XCLK,
-        .pin_pclk = CONFIG_PCLK,
-        .pin_vsync = CONFIG_VSYNC,
-        .pin_href = CONFIG_HREF,
-        .pin_sscb_sda = CONFIG_SDA,
-        .pin_sscb_scl = CONFIG_SCL,
-        .pin_reset = CONFIG_RESET,
-        //.xclk_freq_hz = CONFIG_XCLK_FREQ,
-        .xclk_freq_hz = 8000000, //16000000, //8000000,
-    };
-    */
-    //camera_model_t camera_model;
+
+    // camera init
+
     esp_err_t err = camera_probe(&config, &camera_model);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Camera probe failed with error 0x%x", err);
@@ -1051,13 +1251,35 @@ PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTDO_U, 1); //gpio_matrix_in(GPIO_NUM_15, HSPICS0
         ESP_LOGE(TAG, "Camera not supported");
         return;
     }
+
+
+
+    free8=xPortGetFreeHeapSizeCaps(MALLOC_CAP_8BIT);
+    free32=xPortGetFreeHeapSizeCaps(MALLOC_CAP_32BIT);
+    ESP_LOGI(TAG, "Free 8bit-capable memory: %dK, 32-bit capable memory %dK\n", free8, free32);
+
+
+    initialise_wifi();
+
+    ESP_LOGD(TAG, "Wifi Initialized...");
+    free8=xPortGetFreeHeapSizeCaps(MALLOC_CAP_8BIT);
+    free32=xPortGetFreeHeapSizeCaps(MALLOC_CAP_32BIT);
+    ESP_LOGI(TAG, "Free 8bit-capable memory: %dK, 32-bit capable memory %dK\n", free8, free32);
+
+    //delay(10000);
+    // VERY UNSTABLE without this delay after init'ing wifi...
+    vTaskDelay(10000 / portTICK_RATE_MS);
+
+
+    config.displayBuffer = currFbPtr;
     config.pixel_format = s_pixel_format;
     err = camera_init(&config);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Camera init failed with error 0x%x", err);
         return;
     }
-    initialise_wifi();
+
+
     ESP_LOGI(TAG, "Free heap: %u", xPortGetFreeHeapSize());
     ESP_LOGI(TAG, "Camera demo ready");
     if (s_pixel_format == CAMERA_PF_GRAYSCALE) {
@@ -1072,11 +1294,23 @@ PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTDO_U, 1); //gpio_matrix_in(GPIO_NUM_15, HSPICS0
         ESP_LOGI(TAG, "open http://" IPSTR "/jpg for single image/jpg image", IP2STR(&s_ip_addr));
         ESP_LOGI(TAG, "open http://" IPSTR "/stream for multipart/x-mixed-replace stream of JPEGs", IP2STR(&s_ip_addr));
     }
-    xTaskCreate(&http_server, "http_server", 4096, NULL, 5, NULL);
 
-    push_framebuffer_to_tft();
+    ESP_LOGD(TAG, "Starting http_server task...");
+//    xTaskCreate(&http_server, "http_server", 4096, NULL, 5, NULL);
+    xTaskCreatePinnedToCore(&http_server, "http_server", 8048, NULL, 5, NULL,1);
 
-    //Go do nice stuff.
-    //display_pretty_colors(spi);
+
+    ESP_LOGD(TAG, "Starting ILI9341 display task...");
+    xSemaphoreGive(dispDoneSem);
+//    xTaskCreate(&push_framebuffer_to_tft, "push_framebuffer_to_tft", 4096, NULL, 5, NULL);
+    xTaskCreatePinnedToCore(&push_framebuffer_to_tft, "push_framebuffer_to_tft", 4096, NULL, 5, NULL,1);
+
+    //PAUSE_DISPLAY=false;
+    //push_framebuffer_to_tft(NULL);
+
+		// start telnet task after IP is assigned...
+		ESP_LOGD(TAG, "Starting Telnetd task...");
+		xTaskCreatePinnedToCore(&telnetTask, "telnetTask", 8048, NULL, 5, NULL, 1);
+
 
 }
