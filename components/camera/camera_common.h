@@ -22,6 +22,16 @@ typedef union {
     uint32_t val;
 } dma_elem_t;
 
+typedef union {
+    struct {
+        uint8_t b1;
+        uint8_t b2;
+        uint8_t b3;
+        uint8_t b4;
+    };
+    uint32_t val;
+} display_buff_elem_t;
+
 typedef enum {
     /* camera sends byte sequence: s1, s2, s3, s4, ...
      * fifo receives: 00 s1 00 s2, 00 s2 00 s3, 00 s3 00 s4, ...
@@ -42,7 +52,7 @@ typedef void (*dma_filter_t)(const dma_elem_t* src, lldesc_t* dma_desc, uint8_t*
 typedef struct {
     camera_config_t config;
     sensor_t sensor;
-    uint8_t *fb;
+    uint32_t *fb;
     size_t fb_size;
     size_t data_size;
     size_t width;
@@ -70,4 +80,3 @@ typedef struct {
     SemaphoreHandle_t frame_ready;
     TaskHandle_t dma_filter_task;
 } camera_state_t;
-

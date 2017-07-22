@@ -23,10 +23,12 @@ extern "C" {
 #endif
 
 typedef enum {
-    CAMERA_PF_RGB565 = 0,       //!< RGB, 2 bytes per pixel (not implemented)
-    CAMERA_PF_YUV422 = 1,       //!< YUYV, 2 bytes per pixel (not implemented)
+    CAMERA_PF_RGB565 = 0,       //!< RGB, 2 bytes per pixel
+    CAMERA_PF_YUV422 = 1,       //!< YUYV, 2 bytes per pixel
     CAMERA_PF_GRAYSCALE = 2,    //!< 1 byte per pixel
     CAMERA_PF_JPEG = 3,         //!< JPEG compressed
+    CAMERA_PF_RGB555 = 4,       //!< RGB, 2 bytes per pixel
+    CAMERA_PF_RGB444 = 5,       //!< RGB, 2 bytes per pixel
 } camera_pixelformat_t;
 
 typedef enum {
@@ -71,6 +73,10 @@ typedef struct {
     camera_framesize_t frame_size;
 
     int jpeg_quality;
+    bool test_pattern_enabled;
+
+    uint32_t* displayBuffer;
+
 } camera_config_t;
 
 #define ESP_ERR_CAMERA_BASE 0x20000
@@ -111,7 +117,8 @@ esp_err_t camera_init(const camera_config_t* config);
  *
  * @return pointer to framebuffer
  */
-uint8_t* camera_get_fb();
+//uint8_t* camera_get_fb();
+uint32_t* camera_get_fb();
 
 /**
  * @brief Return the size of valid data in the framebuffer
@@ -155,15 +162,17 @@ void camera_print_fb();
  * @brief get frame info string
  *
  */
-int get_image_info_str(char* outstr);
 
+int get_image_mime_info_str(char* outstr);
 
 esp_err_t reset_xclk(camera_config_t* config);
 esp_err_t reset_pixformat();
 sensor_t* get_cam_sensor();
 int cam_set_sensor_reg(uint8_t reg, uint8_t regVal);
 
-void set_test_modes(bool enableYuvTest, bool reverseBytes);
+void set_test_modes(bool s_yuv_test_mode, bool s_yuv_reverse_bytes,
+                    bool s_raw_bytes_only, bool s_gbr_rgb_order, int s_highspeed_sampling_mode, bool s_test_tft_filter);
+
 
 #ifdef __cplusplus
 }
