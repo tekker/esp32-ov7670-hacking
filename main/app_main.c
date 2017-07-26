@@ -246,24 +246,59 @@ static void send_line_finish(spi_device_handle_t spi)
     }
 }
 
-// camera code
+void spi_lcd_wait_finish() {
+  xSemaphoreTake(dispDoneSem, portMAX_DELAY);
+}
 
-const static char http_hdr[] = "HTTP/1.1 200 OK\r\n";
-const static char http_stream_hdr[] =
-        "Content-type: multipart/x-mixed-replace; boundary=123456789000000000000987654321\r\n\r\n";
-const static char http_jpg_hdr[] =
-        "Content-type: image/jpg\r\n\r\n";
-const static char http_pgm_hdr[] =
-        "Content-type: image/x-portable-graymap\r\n\r\n";
-const static char http_stream_boundary[] = "--123456789000000000000987654321\r\n";
-const static char http_bitmap_hdr[] =
-        "Content-type: image/bitmap\r\n\r\n";
-const static char http_yuv422_hdr[] =
-        "Content-Disposition: attachment; Content-type: application/octet-stream\r\n\r\n";
+void spi_lcd_send() {
+  xSemaphoreGive(dispSem);
+}
 
-static EventGroupHandle_t wifi_event_group;
-const int CONNECTED_BIT = BIT0;
-static ip4_addr_t s_ip_addr;
+SemaphoreHandle_t captureDoneSem = NULL;
+SemaphoreHandle_t captureSem = NULL;
+
+void capture_wait_finish() {
+  xSemaphoreTake(captureDoneSem, portMAX_DELAY);
+}
+
+void capture_request() {
+  xSemaphoreGive(captureSem);
+}
+
+static void captureTask(void *pvParameters) {
+
+  err_t err;
+  xSemaphoreGive(captureDoneSem);
+  while(1) {
+     //frame++;
+     xSemaphoreTake(captureSem, portMAX_DELAY);
+
+     // pause display while capturing... ???
+     //xSemaphoreTake(dispDoneSem, portMAX_DELAY);
+     err = camera_run();
+     // let display know... test only
+     //xSemaphoreGive(dispDoneSem);
+
+
+
+     xSemaphoreGive(captureDoneSem);
+     //vTaskDelay(10 / portTICK_RATE_MS);
+     // do lcd here....
+     spi_lcd_send();
+     spi_lcd_wait_finish();
+
+     // reorder?
+     vTaskDelay(30 / portTICK_RATE_MS);
+     //xSemaphoreGive(captureDoneSem); // only return when LCD finished display
+
+   } // end while(1)
+
+}
+
+#define ILI_WIDTH 320
+#define ILI_HEIGHT 240
+
+// CAMERA CONFIG
 
 static camera_pixelformat_t s_pixel_format;
 static camera_config_t config = {
@@ -293,6 +328,187 @@ static camera_model_t camera_model;
 //#define CAMERA_PIXEL_FORMAT CAMERA_PF_RGB565
 #define CAMERA_PIXEL_FORMAT CAMERA_PF_YUV422
 #define CAMERA_FRAME_SIZE CAMERA_FS_QVGA
+
+
+// DISPLAY LOGIC
+static inline uint8_t clamp(int n)
+{
+    n = n>255 ? 255 : n;
+    return n<0 ? 0 : n;
+}
+
+// Pass 8-bit (each) R,G,B, get back 16-bit packed color
+static inline uint16_t ILI9341_color565(uint8_t r, uint8_t g, uint8_t b) {
+  return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+}
+
+uint16_t get_grayscale_pixel_as_565(uint8_t pix) {
+    // R = (img[n]&248)<<8; // 5 bit cao cua Y
+    // G = (img[n]&252)<<3; // 6 bit cao cua Y
+    // B = (img[n]&248)>>3; // 5 bit cao cua Y
+    uint16_t graypixel=((pix&248)<<8)|((pix&252)<<3)|((pix&248)>>3);
+    return graypixel;
+
+}
+
+// integers instead of floating point...
+static inline uint16_t fast_yuv_to_rgb565(int y, int u, int v) {
+int a0 = 1192 * (y - 16);
+int a1 = 1634 * (v - 128);
+int a2 = 832 * (v - 128);
+int a3 = 400 * (u - 128);
+int a4 = 2066 * (u - 128);
+int r = (a0 + a1) >> 10;
+int g = (a0 - a2 - a3) >> 10;
+int b = (a0 + a4) >> 10;
+return ILI9341_color565(clamp(r),clamp(g),clamp(b));
+
+}
+
+// fast but uses floating points...
+static inline uint16_t fast_pascal_to_565(int Y, int U, int V) {
+  uint8_t r, g, b;
+  r = clamp(1.164*(Y-16) + 1.596*(V-128));
+  g = clamp(1.164*(Y-16) - 0.392*(U-128) - 0.813*(V-128));
+  b = clamp(1.164*(Y-16) + 2.017*(U-128));
+  return ILI9341_color565(r,g,b);
+}
+
+//Warning: This gets squeezed into IRAM.
+volatile static uint32_t *currFbPtr __attribute__ ((aligned(4))) = NULL;
+
+inline uint8_t unpack(int byteNumber, uint32_t value) {
+    return (value >> (byteNumber * 8));
+}
+
+static bool movie_mode = false;
+// TEST MODE!!
+static void push_framebuffer_to_tft(void *pvParameters) {
+  uint16_t line[2][320];
+  int x, y; //, frame=0;
+  //Indexes of the line currently being sent to the LCD and the line we're calculating.
+  int sending_line=-1;
+  int calc_line=0;
+
+  uint32_t* fbl = camera_get_fb();
+
+  int ili_width = 320;
+  int ili_height = 240;
+  int width = camera_get_fb_width();
+  int height =  camera_get_fb_height();
+  int max_fb_pos = width * height;
+  uint16_t pixel565 = 0;
+  uint16_t pixel565_2 = 0;
+  int current_byte_pos = 0, current_fb_pixel_pos = 0;
+
+  xSemaphoreGive(dispDoneSem);
+
+  while(1) {
+     //frame++;
+     xSemaphoreTake(dispSem, portMAX_DELAY);
+ //		printf("Display task: frame.\n");
+     bool reset_loop = false;
+     for (y=0; y<ili_height; y++) {
+        //Calculate a line, operate on 2 pixels at a time...
+        for (x=0; x<ili_width; x+=2) {
+
+            // TODO: display pause logic cleanup
+/*
+            if (PAUSE_DISPLAY) {
+              while (PAUSE_DISPLAY) { vTaskDelay(30 / portTICK_RATE_MS); }
+              // reset FB, cam may have re-init'ed
+              fbl = camera_get_fb();
+              reset_loop = true;
+            }
+            if (reset_loop) break;
+*/
+
+            // wrap pixels around...
+            current_fb_pixel_pos = ((y*width)+x+tft_offset) % max_fb_pos;
+            // note, the next line is done to enable shifting the offset
+            // TODO: remove test mod %
+            current_byte_pos = current_fb_pixel_pos/2+(tft_offset % 4);
+
+            if (fbl != NULL) {
+              if (s_pixel_format == CAMERA_PF_YUV422) {
+                uint32_t long2px = 0;
+                uint8_t y1, y2, u, v;
+
+                long2px = fbl[current_byte_pos];
+                y1 = unpack(0,long2px);
+                v = unpack(1,long2px);;
+                y2 = unpack(2,long2px);
+                u = unpack(3,long2px);
+
+                // UYVY (Reverse order)
+                /*
+                y1 = fb[current_byte_pos+3];
+                v = fb[current_byte_pos+2];
+                y2 = fb[current_byte_pos+1];
+                u = fb[current_byte_pos];
+                */
+
+                pixel565 = fast_yuv_to_rgb565(y1,u,v);
+                pixel565_2 = fast_yuv_to_rgb565(y2,u,v);
+                // swap bytes for ILI
+                line[calc_line][x]= __bswap_16(pixel565);
+                line[calc_line][x+1]= __bswap_16(pixel565_2);
+              } else {
+                // rgb565 direct from OV7670 to ILI9341
+                // best to swap bytes here instead of bswap
+                uint32_t long2px = 0;
+                uint8_t y1, y2, u, v;
+
+                long2px = fbl[current_byte_pos];
+                pixel565 =  (unpack(3,long2px) << 8) | unpack(2,long2px);
+                pixel565_2 = (unpack(1,long2px) << 8) | unpack(0,long2px);
+
+                /*
+                pixel565 =  (fb[current_byte_pos] << 8) |  fb[current_byte_pos+1]; //(fb[currBytePos] & 0xFF00 >> 8) | (p565 = fb[currBytePos+1] & 0x00FF);
+                pixel565_2 = (fb[current_byte_pos+2] << 8) |  fb[current_byte_pos+3];
+                */
+                line[calc_line][x]= pixel565;
+                line[calc_line][x+1]= pixel565_2;
+              }
+            }
+        }
+        //Finish up the sending process of the previous line, if any
+        if (sending_line!=-1) send_line_finish(spi);
+        //Swap sending_line and calc_line
+        sending_line=calc_line;
+        calc_line=(calc_line==1)?0:1;
+        //Send the line we currently calculated.
+        send_line(spi, y, line[sending_line]);
+        //The line is queued up for sending now; the actual sending happens in the
+        //background. We can go on to calculate the next line as long as we do not
+        //touch line[sending_line]; the SPI sending process is still reading from that.
+      } // end for (y=0; y<ili_height; y++)
+
+      // TODO: check that line is actually sent before giving semaphore!
+      vTaskDelay(10 / portTICK_RATE_MS);
+
+      xSemaphoreGive(dispDoneSem);
+  } // end while(1)
+}
+
+// camera code
+
+const static char http_hdr[] = "HTTP/1.1 200 OK\r\n";
+const static char http_stream_hdr[] =
+        "Content-type: multipart/x-mixed-replace; boundary=123456789000000000000987654321\r\n\r\n";
+const static char http_jpg_hdr[] =
+        "Content-type: image/jpg\r\n\r\n";
+const static char http_pgm_hdr[] =
+        "Content-type: image/x-portable-graymap\r\n\r\n";
+const static char http_stream_boundary[] = "--123456789000000000000987654321\r\n";
+const static char http_bitmap_hdr[] =
+        "Content-type: image/bitmap\r\n\r\n";
+const static char http_yuv422_hdr[] =
+        "Content-Disposition: attachment; Content-type: application/octet-stream\r\n\r\n";
+
+static EventGroupHandle_t wifi_event_group;
+const int CONNECTED_BIT = BIT0;
+static ip4_addr_t s_ip_addr;
 
 // command parser...
 #include "smallargs.h"
@@ -324,6 +540,7 @@ static void handle_camera_config_chg(bool reinit_reqd) {
     }
 }
 
+
 static int help_cb(const sarg_result *res)
 {
     UNUSED(res);
@@ -343,25 +560,60 @@ static int help_cb(const sarg_result *res)
     return 0;
 }
 
+
+/*
+
+void captureTask( void * pvParameters ) {
+    while(1) {
+     while (movie_mode) {
+      PAUSE_DISPLAY = true;
+      camera_run();
+      PAUSE_DISPLAY = false;
+      spi_lcd_send();
+      spi_lcd_wait_finish();
+      vTaskDelay(30 / portTICK_RATE_MS);
+     }
+     vTaskDelay(10 / portTICK_RATE_MS);
+   }
+   vTaskDelete(NULL);
+}
+*/
+
+
 static int sys_stats_cb(const sarg_result *res)
 {
-    int level = 0;
-    size_t free8start, free32start, free8, free32;
+    static int level = 0;
+    static size_t free8start, free32start, free8, free32, tstk;
     level = res->int_val;
-    int length = 0;
-//    if (level == 0) {
+    static int length = 0;
+    if (level == 0) {
       free8start = xPortGetMinimumEverFreeHeapSizeCaps(MALLOC_CAP_8BIT);
       free32start = xPortGetMinimumEverFreeHeapSizeCaps(MALLOC_CAP_32BIT);
       free8=xPortGetFreeHeapSizeCaps(MALLOC_CAP_8BIT);
       free32=xPortGetFreeHeapSizeCaps(MALLOC_CAP_32BIT);
-      length += sprintf(telnet_cmd_response_buff+length, "Free 8-bit=%db, free 32-bit=%db, min 8-bit=%db, min 32-bit=%db",free8,free32, free8start, free32start);
-/*
-    } else {  //if (level == 1) {
-            //vTaskList(telnet_cmd_response_buff);
-      length += sprintf(telnet_cmd_response_buff+length, "vTaskList not implemented..");
+      tstk = uxTaskGetStackHighWaterMark(NULL);
+      length += sprintf(telnet_cmd_response_buff+length,
+        "Stack: %db, Free 8-bit=%db, free 32-bit=%db, min 8-bit=%db, min 32-bit=%db.\n",
+        tstk,free8,free32, free8start, free32start);
+    } else if (level == 1) {
+      //vTaskList(telnet_cmd_response_buff);
+      //vTaskGetRunTimeStats(telnet_cmd_response_buff);
+      length += sprintf(telnet_cmd_response_buff+length, "not implemented\n");
 
+    } else if (level ==2) {
+
+        movie_mode = !movie_mode;
+        if (movie_mode ) {
+          capture_request();
+        } else {
+          capture_wait_finish();
+        }
+        // start capture task!
+
+        length += sprintf(telnet_cmd_response_buff+length, "snapshot capture done\n");
+        // TESTING !@#!#!@
     }
-*/
+
     telnet_esp32_sendData((uint8_t *)telnet_cmd_response_buff, strlen(telnet_cmd_response_buff));
     return SARG_ERR_SUCCESS;
 }
@@ -608,60 +860,12 @@ static void telnetTask(void *data) {
   ESP_LOGD(TAG, ">> telnetTask");
   telnet_esp32_listenForClients(recvData);
   ESP_LOGD(TAG, "<< telnetTask");
+
+  ESP_LOGI(TAG, "task stack: %d", uxTaskGetStackHighWaterMark(NULL));
   vTaskDelete(NULL);
 }
 
 
-// DISPLAY LOGIC
-static inline uint8_t clamp(int n)
-{
-    n = n>255 ? 255 : n;
-    return n<0 ? 0 : n;
-}
-
-// Pass 8-bit (each) R,G,B, get back 16-bit packed color
-static inline uint16_t ILI9341_color565(uint8_t r, uint8_t g, uint8_t b) {
-  return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
-}
-
-uint16_t get_grayscale_pixel_as_565(uint8_t pix) {
-    // R = (img[n]&248)<<8; // 5 bit cao cua Y
-    // G = (img[n]&252)<<3; // 6 bit cao cua Y
-    // B = (img[n]&248)>>3; // 5 bit cao cua Y
-    uint16_t graypixel=((pix&248)<<8)|((pix&252)<<3)|((pix&248)>>3);
-    return graypixel;
-
-}
-
-// integers instead of floating point...
-static inline uint16_t fast_yuv_to_rgb565(int y, int u, int v) {
-int a0 = 1192 * (y - 16);
-int a1 = 1634 * (v - 128);
-int a2 = 832 * (v - 128);
-int a3 = 400 * (u - 128);
-int a4 = 2066 * (u - 128);
-int r = (a0 + a1) >> 10;
-int g = (a0 - a2 - a3) >> 10;
-int b = (a0 + a4) >> 10;
-return ILI9341_color565(clamp(r),clamp(g),clamp(b));
-
-}
-
-// fast but uses floating points...
-static inline uint16_t fast_pascal_to_565(int Y, int U, int V) {
-  uint8_t r, g, b;
-  r = clamp(1.164*(Y-16) + 1.596*(V-128));
-  g = clamp(1.164*(Y-16) - 0.392*(U-128) - 0.813*(V-128));
-  b = clamp(1.164*(Y-16) + 2.017*(U-128));
-  return ILI9341_color565(r,g,b);
-}
-
-//Warning: This gets squeezed into IRAM.
-volatile static uint32_t *currFbPtr __attribute__ ((aligned(4))) = NULL;
-
-inline uint8_t unpack(int byteNumber, uint32_t value) {
-    return (value >> (byteNumber * 8));
-}
 
 // 8-bit logic - ref.
 /*
@@ -732,110 +936,6 @@ static void convert_fb32bit_line_to_bmp565(uint32_t *srcline, uint8_t *destline,
   }
 }
 
-void spi_lcd_wait_finish() {
-  xSemaphoreTake(dispDoneSem, portMAX_DELAY);
-}
-
-void spi_lcd_send() {
-  xSemaphoreGive(dispSem);
-}
-
-#define ILI_WIDTH 320
-#define ILI_HEIGHT 240
-
-static void push_framebuffer_to_tft(void *pvParameters) {
-  uint16_t line[2][320];
-  int x, y; //, frame=0;
-  //Indexes of the line currently being sent to the LCD and the line we're calculating.
-  int sending_line=-1;
-  int calc_line=0;
-
-// 32-bit aligned access (uint32 instead of byte array)
-  uint32_t* fbl = camera_get_fb();
-  uint32_t long2px = 0;
-
-  int width = camera_get_fb_width();
-  int height =  camera_get_fb_height();
-  int max_fb_pos = width * height;
-  uint16_t pixel565 = 0;
-  uint16_t pixel565_2 = 0;
-  int current_byte_pos = 0, current_fb_pixel_pos = 0;
-
-  xSemaphoreGive(dispDoneSem);
-
-  while(1) {
-  //   frame++;
-     xSemaphoreTake(dispSem, portMAX_DELAY);
- //   printf("Display task: frame.\n");
-     bool reset_loop = false;
-     for (y=0; y<ILI_HEIGHT; y++) {
-        //Calculate a line, operate on 2 pixels at a time...
-        for (x=0; x<ILI_WIDTH; x+=2) {
-            // TODO: display pause logic cleanup
-            if (PAUSE_DISPLAY) {
-              while (PAUSE_DISPLAY) { vTaskDelay(30 / portTICK_RATE_MS); }
-              // reset FB, cam may have re-init'ed
-              fbl = camera_get_fb();
-              reset_loop = true;
-            }
-            if (reset_loop) break;
-            // wrap pixels around...
-            current_fb_pixel_pos = ((y*width)+x+tft_offset) % max_fb_pos;
-            // note, the next line is done to enable shifting the offset
-            // TODO: remove test mod %
-            current_byte_pos = current_fb_pixel_pos/2+(tft_offset % 4);
-            if (fbl != NULL) {
-              if (s_pixel_format == CAMERA_PF_YUV422) {
-                uint8_t y1, y2, u, v;
-                long2px = fbl[current_byte_pos];
-                y1 = unpack(0,long2px);
-                v = unpack(1,long2px);;
-                y2 = unpack(2,long2px);
-                u = unpack(3,long2px);
-                // UYVY (Reverse order)
-                /*
-                y1 = fb[current_byte_pos+3];
-                v = fb[current_byte_pos+2];
-                y2 = fb[current_byte_pos+1];
-                u = fb[current_byte_pos];
-                */
-                pixel565 = fast_yuv_to_rgb565(y1,u,v);
-                pixel565_2 = fast_yuv_to_rgb565(y2,u,v);
-                // swapped bytes for ILI compared to BMP format
-                line[calc_line][x]= __bswap_16(pixel565);
-                line[calc_line][x+1]= __bswap_16(pixel565_2);
-              } else {
-                // rgb565 direct from OV7670 to ILI9341
-                // best to swap bytes here instead of bswap
-                long2px = fbl[current_byte_pos];
-                pixel565 =  (unpack(3,long2px) << 8) | unpack(2,long2px);
-                pixel565_2 = (unpack(1,long2px) << 8) | unpack(0,long2px);
-                /*
-                pixel565 =  (fb[current_byte_pos] << 8) |  fb[current_byte_pos+1]; //(fb[currBytePos] & 0xFF00 >> 8) | (p565 = fb[currBytePos+1] & 0x00FF);
-                pixel565_2 = (fb[current_byte_pos+2] << 8) |  fb[current_byte_pos+3];
-                */
-                line[calc_line][x]= pixel565;
-                line[calc_line][x+1]= pixel565_2;
-              }
-            }
-        }
-        //Finish up the sending process of the previous line, if any
-        if (sending_line!=-1) send_line_finish(spi);
-        //Swap sending_line and calc_line
-        sending_line=calc_line;
-        calc_line=(calc_line==1)?0:1;
-        //Send the line we currently calculated.
-        send_line(spi, y, line[sending_line]);
-        //The line is queued up for sending now; the actual sending happens in the
-        //background. We can go on to calculate the next line as long as we do not
-        //touch line[sending_line]; the SPI sending process is still reading from that.
-      } // end for (y=0; y<ili_height; y++)
-      // TODO: check that line is actually sent before giving semaphore!
-      vTaskDelay(30 / portTICK_RATE_MS);
-      xSemaphoreGive(dispDoneSem);
-  } // end while(1)
-}
-
 static void http_server_netconn_serve(struct netconn *conn)
 {
     struct netbuf *inbuf;
@@ -870,12 +970,16 @@ static void http_server_netconn_serve(struct netconn *conn)
                 while(err == ERR_OK) {
                     ESP_LOGD(TAG, "Capture frame");
 
+/*
                     PAUSE_DISPLAY = true;
                     err = camera_run();
                     PAUSE_DISPLAY = false;
+*/
+                    capture_request();
+                    capture_wait_finish();
 
-                    spi_lcd_send();
-                    spi_lcd_wait_finish();
+                    //spi_lcd_send();
+                    //spi_lcd_wait_finish();
 
                     if (err != ESP_OK) {
                         ESP_LOGD(TAG, "Camera capture failed with error = %d", err);
@@ -914,10 +1018,11 @@ static void http_server_netconn_serve(struct netconn *conn)
                             err = netconn_write(conn, http_stream_boundary,
                                     sizeof(http_stream_boundary) -1, NETCONN_NOCOPY);
                         }
-                        vTaskDelay(200 / portTICK_RATE_MS);
+                        vTaskDelay(30 / portTICK_RATE_MS);
                     }
                 }
                 ESP_LOGD(TAG, "Stream ended.");
+                //ESP_LOGI(TAG, "task stack: %d", uxTaskGetStackHighWaterMark(NULL));
             } else {
                 if (s_pixel_format == CAMERA_PF_JPEG) {
                     netconn_write(conn, http_jpg_hdr, sizeof(http_jpg_hdr) - 1, NETCONN_NOCOPY);
@@ -970,16 +1075,24 @@ static void http_server_netconn_serve(struct netconn *conn)
                 // handle non streaming images (http../get and http:../bmp )
 
                   ESP_LOGD(TAG, "Image requested.");
-                  PAUSE_DISPLAY = true;
-                  err = camera_run();
-                  PAUSE_DISPLAY = false;
-                  spi_lcd_send();
-                  spi_lcd_wait_finish();
+                  //ESP_LOGI(TAG, "task stack: %d", uxTaskGetStackHighWaterMark(NULL));
+
+                  //PAUSE_DISPLAY = true;
+                  //err = camera_run();
+                  //PAUSE_DISPLAY = false;
+                  capture_request();
+                  capture_wait_finish();
+
+                  //spi_lcd_send();
+                  //spi_lcd_wait_finish();
+
+                  //ESP_LOGI(TAG, "task stack: %d", uxTaskGetStackHighWaterMark(NULL));
 
                   if (err != ESP_OK) {
                       ESP_LOGD(TAG, "Camera capture failed with error = %d", err);
                   } else {
                       ESP_LOGD(TAG, "Done");
+                      //ESP_LOGI(TAG, "task stack: %d", uxTaskGetStackHighWaterMark(NULL));
                       //Send jpeg
                       if ((s_pixel_format == CAMERA_PF_RGB565) || (s_pixel_format == CAMERA_PF_YUV422)) {
                         ESP_LOGD(TAG, "Converting framebuffer to RGB565 requested, sending...");
@@ -991,6 +1104,8 @@ static void http_server_netconn_serve(struct netconn *conn)
                           err = netconn_write(conn, s_line, 320*2,
                                         NETCONN_COPY);
                         }
+                    //    ESP_LOGI(TAG, "task stack: %d", uxTaskGetStackHighWaterMark(NULL));
+
                       } else
                         err = netconn_write(conn, camera_get_fb(), camera_get_data_size(),
                           NETCONN_NOCOPY);
@@ -1024,6 +1139,22 @@ static void http_server(void *pvParameters)
     netconn_delete(conn);
 }
 
+static spi_bus_config_t buscfg={
+    .miso_io_num=PIN_NUM_MISO,
+    .mosi_io_num=PIN_NUM_MOSI,
+    .sclk_io_num=PIN_NUM_CLK,
+    .quadwp_io_num=-1,
+    .quadhd_io_num=-1
+};
+static spi_device_interface_config_t devcfg={
+    .clock_speed_hz=10000000,               //Clock out at 10 MHz
+    //.clock_speed_hz=26000000,               //Clock out at 26 MHz. Yes, that's heavily overclocked.
+    .mode=0,                                //SPI mode 0
+    .spics_io_num=PIN_NUM_CS,               //CS pin
+    .queue_size=7,                          //We want to be able to queue 7 transactions at a time
+    .pre_cb=ili_spi_pre_transfer_callback,  //Specify pre-transfer callback to handle D/C line
+};
+
 void app_main()
 {
     size_t free8start, free32start, free8, free32;
@@ -1036,7 +1167,7 @@ void app_main()
     ESP_LOGI(TAG,"Starting ESPILICAM");
 
     // report memory at startup
-    ESP_LOGI(TAG,"Starting Memory Allocation for Display");
+  //  ESP_LOGI(TAG,"Starting Memory Allocation for Display");
 
     free8=xPortGetFreeHeapSizeCaps(MALLOC_CAP_8BIT);
     free32=xPortGetFreeHeapSizeCaps(MALLOC_CAP_32BIT);
@@ -1046,9 +1177,10 @@ void app_main()
     ESP_LOGD(TAG, "Allocating Frame Buffer memory...");
     currFbPtr=pvPortMallocCaps(320*240*2, MALLOC_CAP_32BIT);
 
-    ESP_LOGI(TAG,"Setup ILI9341");
+//    ESP_LOGI(TAG,"Setup ILI9341");
 
     esp_err_t ret;
+/*
     spi_bus_config_t buscfg={
         .miso_io_num=PIN_NUM_MISO,
         .mosi_io_num=PIN_NUM_MOSI,
@@ -1064,16 +1196,17 @@ void app_main()
         .queue_size=7,                          //We want to be able to queue 7 transactions at a time
         .pre_cb=ili_spi_pre_transfer_callback,  //Specify pre-transfer callback to handle D/C line
     };
+*/
     //Initialize the SPI bus
-    ESP_LOGI(TAG, "Call spi_bus_initialize");
+    //ESP_LOGI(TAG, "Call spi_bus_initialize");
     ret=spi_bus_initialize(HSPI_HOST, &buscfg, 1);
     assert(ret==ESP_OK);
     //Attach the LCD to the SPI bus
-    ESP_LOGI(TAG, "Call spi_bus_add_device");
+    //ESP_LOGI(TAG, "Call spi_bus_add_device");
     ret=spi_bus_add_device(HSPI_HOST, &devcfg, &spi);
     assert(ret==ESP_OK);
     //Initialize the LCD
-    ESP_LOGI(TAG, "Call ili_init");
+    //ESP_LOGI(TAG, "Call ili_init");
     ili_init(spi);
 
     dispSem=xSemaphoreCreateBinary();
@@ -1120,6 +1253,8 @@ void app_main()
     // VERY UNSTABLE without this delay after init'ing wifi...
     vTaskDelay(2000 / portTICK_RATE_MS);
 
+
+
     config.displayBuffer = currFbPtr;
     config.pixel_format = s_pixel_format;
     err = camera_init(&config);
@@ -1128,9 +1263,13 @@ void app_main()
         return;
     }
 
+
     vTaskDelay(1000 / portTICK_RATE_MS);
 
-    ESP_LOGI(TAG, "Free heap: %u", xPortGetFreeHeapSize());
+//    ESP_LOGI(TAG, "Free heap: %u", xPortGetFreeHeapSize());
+//    ESP_LOGI(TAG, "task stack: %d", uxTaskGetStackHighWaterMark(NULL));
+
+
     ESP_LOGI(TAG, "Camera demo ready");
     if (s_pixel_format == CAMERA_PF_GRAYSCALE) {
         ESP_LOGI(TAG, "open http://" IPSTR "/get for a single grayscale bitmap (no headers)", IP2STR(&s_ip_addr));
@@ -1152,9 +1291,23 @@ void app_main()
     ESP_LOGD(TAG, "Starting ILI9341 display task...");
     xSemaphoreGive(dispDoneSem);
 //    xTaskCreate(&push_framebuffer_to_tft, "push_framebuffer_to_tft", 4096, NULL, 5, NULL);
+    //TaskHandle_t th =
     xTaskCreatePinnedToCore(&push_framebuffer_to_tft, "push_framebuffer_to_tft", 4096, NULL, 5, NULL,1);
+    //camera_set_display_task(&th);
+    //vTaskDelay(1000 / portTICK_RATE_MS);
 
     // start telnet task after IP is assigned...
     ESP_LOGD(TAG, "Starting Telnetd task...");
     xTaskCreatePinnedToCore(&telnetTask, "telnetTask", 8048, NULL, 5, NULL, 1);
+
+    //ESP_LOGI(TAG, "Free heap: %u", xPortGetFreeHeapSize());
+    //ESP_LOGI(TAG, "task stack: %d", uxTaskGetStackHighWaterMark(NULL));
+    captureSem=xSemaphoreCreateBinary();
+    captureDoneSem=xSemaphoreCreateBinary();
+
+    vTaskDelay(10000 / portTICK_RATE_MS);
+    //TaskHandle_t th2 =
+    xTaskCreatePinnedToCore(&captureTask, "captureTask", 4096, NULL, 5, NULL,1);
+    //TaskHandle_t th2 = xTaskCreate(&captureTask, "captureTask", 4096, NULL, 5, NULL);
+
 }
