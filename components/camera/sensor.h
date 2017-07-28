@@ -131,7 +131,14 @@ typedef struct _sensor {
     int  (*set_exposure_ctrl)   (sensor_t *sensor, int enable);
     int  (*set_hmirror)         (sensor_t *sensor, int enable);
     int  (*set_vflip)           (sensor_t *sensor, int enable);
-    int  (*set_special_effect)  (sensor_t *sensor, sde_t sde);
+    int  (*set_special_effect)  (sensor_t *sensor, int sde); //sde_t sde);
+
+    int  (*set_ov7670_night_mode)  (sensor_t *sensor, int sde); //sde_t sde);
+    int  (*set_ov7670_light_mode)  (sensor_t *sensor, int sde); //sde_t sde);
+    int  (*set_ov7670_gamma)  (sensor_t *sensor, int sde); //sde_t sde);
+    int  (*set_ov7670_whitebalance)  (sensor_t *sensor, int sde); //sde_t sde);
+
+
 } sensor_t;
 
 // Resolution table

@@ -79,4 +79,8 @@ typedef struct {
     QueueHandle_t data_ready;
     SemaphoreHandle_t frame_ready;
     TaskHandle_t dma_filter_task;
+
+    // TODO: link LCD to sensor so that latest image is displayed...
+    //TaskHandle_t lcd_display_task;
+
 } camera_state_t;

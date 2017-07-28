@@ -561,7 +561,23 @@ size_t camera_get_data_size()
     return s_state->data_size;
 }
 
+/*
+TaskHandle_t *camera_get_display_task_ptr()
+{
+    if (s_state == NULL) {
+        return 0;
+    }
+    return &s_state->lcd_display_task;
+}
 
+void camera_set_display_task(TaskHandle_t *th)
+{
+    if (s_state == NULL) {
+        return;
+    }
+    s_state->lcd_display_task = *th;
+}
+*/
 
 esp_err_t camera_run()
 {
