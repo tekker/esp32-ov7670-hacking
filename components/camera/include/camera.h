@@ -17,6 +17,7 @@
 #include "esp_err.h"
 #include "driver/ledc.h"
 #include "../sensor.h"
+#include "freertos/task.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -76,6 +77,7 @@ typedef struct {
     bool test_pattern_enabled;
 
     uint32_t* displayBuffer;
+
 
 } camera_config_t;
 
@@ -168,6 +170,12 @@ int get_image_mime_info_str(char* outstr);
 esp_err_t reset_xclk(camera_config_t* config);
 esp_err_t reset_pixformat();
 sensor_t* get_cam_sensor();
+
+/*
+TaskHandle_t *camera_get_display_task_ptr();
+void camera_set_display_task(TaskHandle_t *th);
+*/
+
 int cam_set_sensor_reg(uint8_t reg, uint8_t regVal);
 
 void set_test_modes(bool s_yuv_test_mode, bool s_yuv_reverse_bytes,

@@ -199,6 +199,7 @@ static const uint8_t saturation_regs[NUM_SATURATION_LEVELS][2] = {
 };
 
 /* FREESCALE OV7670 Driver functions */
+#include "ov7670_def.h"
 
 typedef struct ov7670_frame_rate_cfg
 {
@@ -211,26 +212,222 @@ typedef struct ov7670_frame_rate_cfg
 } ov7670_frame_rate_cfg_t;
 
 
-/*! @brief Frame rate initialization structure data                           */
+/*
 const ov7670_frame_rate_cfg_t OV7670_30FPS_26MHZ_XCLK = {0x80, 0x0a, 0x00, 0x00, 0x2b, 0x00};
 const ov7670_frame_rate_cfg_t OV7670_25FPS_26MHZ_XCLK = {0x80, 0x0a, 0x00, 0x00, 0x99, 0x00};
 const ov7670_frame_rate_cfg_t OV7670_15FPS_26MHZ_XCLK = {0x00, 0x0a, 0x00, 0x00, 0x2b, 0x00};
 const ov7670_frame_rate_cfg_t OV7670_14FPS_26MHZ_XCLK = {0x00, 0x0a, 0x00, 0x00, 0x46, 0x00};
-
+*/
 const ov7670_frame_rate_cfg_t OV7670_30FPS_24MHZ_XCLK = {0x80, 0x0a, 0x00, 0x00, 0x00, 0x00};
 const ov7670_frame_rate_cfg_t OV7670_25FPS_24MHZ_XCLK = {0x80, 0x0a, 0x00, 0x00, 0x66, 0x00};
 const ov7670_frame_rate_cfg_t OV7670_15FPS_24MHZ_XCLK = {0x00, 0x0a, 0x00, 0x00, 0x00, 0x00};
 const ov7670_frame_rate_cfg_t OV7670_14FPS_24MHZ_XCLK = {0x00, 0x0a, 0x00, 0x00, 0x1a, 0x00};
-
+/*
 const ov7670_frame_rate_cfg_t OV7670_30FPS_13MHZ_XCLK = {0x00, 0x4a, 0x00, 0x00, 0x2b, 0x00};
 const ov7670_frame_rate_cfg_t OV7670_25FPS_13MHZ_XCLK = {0x00, 0x4a, 0x00, 0x00, 0x99, 0x00};
 const ov7670_frame_rate_cfg_t OV7670_15FPS_13MHZ_XCLK = {0x01, 0x4a, 0x00, 0x00, 0x2b, 0x00};
 const ov7670_frame_rate_cfg_t OV7670_14FPS_13MHZ_XCLK = {0x01, 0x4a, 0x00, 0x00, 0x46, 0x00};
-
+*/
 const ov7670_frame_rate_cfg_t OV7670_30FPS_12MHZ_XCLK = {0x00, 0x4a, 0x00, 0x00, 0x2b, 0x00};
 const ov7670_frame_rate_cfg_t OV7670_25FPS_12MHZ_XCLK = {0x00, 0x4a, 0x00, 0x00, 0x66, 0x00};
 const ov7670_frame_rate_cfg_t OV7670_15FPS_12MHZ_XCLK = {0x01, 0x4a, 0x00, 0x00, 0x2b, 0x00};
 const ov7670_frame_rate_cfg_t OV7670_14FPS_12MHZ_XCLK = {0x01, 0x4a, 0x00, 0x00, 0x46, 0x00};
+
+
+// @brief Night mode configuration data structure
+typedef struct ov7670_night_mode_cfg
+{
+  uint8_t       com11;
+} ov7670_night_mode_cfg_t;
+// end of night mode configuration data structure
+
+// @brief Banding filter selection data structure
+typedef struct ov7670_filter_cfg
+{
+  uint8_t       com8;
+  uint8_t       bd50st;
+  uint8_t       bd60st;
+  uint8_t       bd50max;
+  uint8_t       bd60max;
+  uint8_t       com11;
+} ov7670_filter_cfg_t;
+// end of Banding filter selection data structure
+
+// @brief White balance configuration structure
+typedef struct ov7670_white_balance_cfg
+{
+  uint8_t       com8;
+  uint8_t       awbctr0;
+  uint8_t       awbctr1;
+  uint8_t       awbctr2;
+  uint8_t       awbctr3;
+  uint8_t       awbc1;
+  uint8_t       awbc2;
+  uint8_t       awbc3;
+  uint8_t       awbc4;
+  uint8_t       awbc5;
+  uint8_t       awbc6;
+  uint8_t       com16;
+} ov7670_white_balance_cfg_t;
+// end of White balance configuration structure
+
+// @brief Light mode configuration structure
+typedef struct ov7670_light_mode_cfg
+{
+  uint8_t       com8;
+  uint8_t       com9;
+  uint8_t       red;
+  uint8_t       green;
+  uint8_t       blue;
+} ov7670_light_mode_cfg_t;
+// end of Light mode configuration structure
+
+// @brief Color saturation configuration structure
+typedef struct ov7670_color_saturation_cfg
+{
+  uint8_t       mtx1;
+  uint8_t       mtx2;
+  uint8_t       mtx3;
+  uint8_t       mtx4;
+  uint8_t       mtx5;
+  uint8_t       mtx6;
+  uint8_t       mtxs;
+  uint8_t       com16;
+} ov7670_color_saturation_cfg_t;
+// end of Color saturation configuration structure
+
+// @brief Special effects configuration structure
+typedef struct ov7670_special_effect_cfg
+{
+  uint8_t       tslb;
+  uint8_t       manu;
+  uint8_t       manv;
+} ov7670_special_effect_cfg_t;
+// end of Special effects configuration structure
+
+// @brief Windowing configuration structure
+typedef struct ov7670_windowing_cfg
+{
+  uint8_t       href;
+  uint8_t       hstart;
+  uint8_t       hstop;
+  uint8_t       vref;
+  uint8_t       vstart;
+  uint8_t       vstop;
+} ov7670_windowing_cfg_t;
+
+// @brief Gamma curve slope configuration structure
+typedef struct ov7670_gamma_curve_slope_cfg
+{
+  uint8_t       slope;
+  uint8_t       gam1;
+  uint8_t       gam2;
+  uint8_t       gam3;
+  uint8_t       gam4;
+  uint8_t       gam5;
+  uint8_t       gam6;
+  uint8_t       gam7;
+  uint8_t       gam8;
+  uint8_t       gam9;
+  uint8_t       gam10;
+  uint8_t       gam11;
+  uint8_t       gam12;
+  uint8_t       gam13;
+  uint8_t       gam14;
+  uint8_t       gam15;
+} ov7670_gamma_curve_slope_cfg_t;
+// end of Gamma curve slope  configuration structure
+
+//
+const ov7670_night_mode_cfg_t OV7670_NIGHT_MODE_DISABLED = {0x00};
+const ov7670_night_mode_cfg_t OV7670_NIGHT_MODE_AUTO_FR_DIVBY2 = {0xa0};
+const ov7670_night_mode_cfg_t OV7670_NIGHT_MODE_AUTO_FR_DIVBY4 = {0xc0};
+const ov7670_night_mode_cfg_t OV7670_NIGHT_MODE_AUTO_FR_DIVBY8 = {0xe0};
+
+
+// @brief White balance initialization structure data
+const ov7670_white_balance_cfg_t OV7670_WHITE_BALANCE_DEFAULT =  {0x02, 0x9a, 0xc0, 0x55, 0x02, 0x14,  \
+                                                                  0xf0, 0x45, 0x61, 0x51, 0x79, 0x08};
+const ov7670_white_balance_cfg_t OV7670_WHITE_BALANCE_DISABLED = {0x00, 0x9a, 0xc0, 0x55, 0x02, 0x14, \
+                                                                  0xf0, 0x45, 0x61, 0x51, 0x79, 0x00};
+const ov7670_white_balance_cfg_t OV7670_WHITE_BALANCE_SIMPLE =   {0x02, 0x9f, 0x10, 0x55, 0x02, 0x14,   \
+                                                                  0xf0, 0x45, 0x61, 0x51, 0x79, 0x08};
+
+// @brief Light mode configuration initialization structure data
+const ov7670_light_mode_cfg_t OV7670_LIGHT_MODE_DISABLED = {0x05, 0x0a, 0x08, 0x00, 0x08};
+const ov7670_light_mode_cfg_t OV7670_LIGHT_MODE_AUTO =     {0xc5, 0x3a, 0x08, 0x00, 0x08};
+const ov7670_light_mode_cfg_t OV7670_LIGHT_MODE_SUNNY =    {0xc5, 0x6a, 0x5a, 0x00, 0x5c};
+const ov7670_light_mode_cfg_t OV7670_LIGHT_MODE_CLOUDY =   {0xc5, 0x0a, 0x58, 0x00, 0x60};
+const ov7670_light_mode_cfg_t OV7670_LIGHT_MODE_OFFICE =   {0xc5, 0x2a, 0x84, 0x00, 0x4c};
+const ov7670_light_mode_cfg_t OV7670_LIGHT_MODE_HOME =     {0xc5, 0x1a, 0x96, 0x00, 0x40};
+
+/*
+// @brief Color saturation configuration initialization structure data
+const ov7670_color_saturation_cfg_t OV7670_COLOR_SATURATION_4PLUS =  {0xc0, 0xc0, 0x00, 0x33, 0x8d, 0xc0, 0x9e, 0x02};
+const ov7670_color_saturation_cfg_t OV7670_COLOR_SATURATION_3PLUS =  {0x99, 0x99, 0x00, 0x28, 0x71, 0x99, 0x9e, 0x02};
+const ov7670_color_saturation_cfg_t OV7670_COLOR_SATURATION_2PLUS =  {0xc0, 0xc0, 0x00, 0x33, 0x8d, 0xc0, 0x9e, 0x00};
+const ov7670_color_saturation_cfg_t OV7670_COLOR_SATURATION_1PLUS =  {0x99, 0x99, 0x00, 0x28, 0x71, 0x99, 0x9e, 0x00};
+const ov7670_color_saturation_cfg_t OV7670_COLOR_SATURATION_0 =      {0x80, 0x80, 0x00, 0x22, 0x5e, 0x80, 0x9e, 0x00};
+const ov7670_color_saturation_cfg_t OV7670_COLOR_SATURATION_DEFAULT ={0x40, 0x34, 0x0c, 0x17, 0x29, 0x40, 0x1e, 0x00};
+const ov7670_color_saturation_cfg_t OV7670_COLOR_SATURATION_1MINUS = {0x66, 0x66, 0x00, 0x1b, 0x4b, 0x66, 0x9e, 0x00};
+const ov7670_color_saturation_cfg_t OV7670_COLOR_SATURATION_2MINUS = {0x40, 0x40, 0x00, 0x11, 0x2f, 0x40, 0x9e, 0x00};
+*/
+
+// @brief Special effects configuration initialization structure data
+const ov7670_special_effect_cfg_t OV7670_SPECIAL_EFFECT_ANTIQUE =     {0x18, 0, 255};
+const ov7670_special_effect_cfg_t OV7670_SPECIAL_EFFECT_SEPHIA =      {0x18, 16, 146};
+const ov7670_special_effect_cfg_t OV7670_SPECIAL_EFFECT_BLUISH =      {0x18, 240, 146};
+const ov7670_special_effect_cfg_t OV7670_SPECIAL_EFFECT_GREENISH =    {0x18, 0, 30};
+const ov7670_special_effect_cfg_t OV7670_SPECIAL_EFFECT_REDISH =      {0x18, 90, 240};
+const ov7670_special_effect_cfg_t OV7670_SPECIAL_EFFECT_BW =          {0x18, 110, 110};
+const ov7670_special_effect_cfg_t OV7670_SPECIAL_EFFECT_NEGATIVE =    {0x28, 0x80, 0x80};
+const ov7670_special_effect_cfg_t OV7670_SPECIAL_EFFECT_BW_NEGATIVE = {0x38, 110, 110};
+const ov7670_special_effect_cfg_t OV7670_SPECIAL_EFFECT_NORMAL =      {0x0c, 0x80, 0x80};
+const ov7670_special_effect_cfg_t OV7670_SPECIAL_EFFECT_DISABLED =    {0x08, 0x80, 0x80};
+
+// @brief Special effects configuration initialization structure data
+const ov7670_gamma_curve_slope_cfg_t OV7670_GAMMA_CURVE_SLOPE_DEFAULT   = {0x24, 0x04, 0x07, 0x10, 0x28, 0x36, 0x44, 0x52, 0x60, 0x6c, 0x78, 0x8c, 0x9e, 0xbb, 0xd2, 0xe5};
+const ov7670_gamma_curve_slope_cfg_t OV7670_GAMMA_CURVE_SLOPE1          = {0x20, 0x10, 0x1e, 0x35, 0x5a, 0x69, 0x76, 0x80, 0x88, 0x8f, 0x96, 0xa3, 0xaf, 0xc4, 0xd7, 0xe8};
+
+/*
+// Banding filter initialization structure data
+const ov7670_filter_cfg_t OV7670_FILTER_DISABLED = {0x00, 0x98, 0x7f, 0x02, 0x03, 0x02};
+const ov7670_filter_cfg_t OV7670_FILTER_30FPS_60HZ = {0x20, 0x98, 0x7f, 0x02, 0x03, 0x02};
+const ov7670_filter_cfg_t OV7670_FILTER_15FPS_60HZ = {0x20, 0x4c, 0x3f, 0x05, 0x07, 0x02};
+const ov7670_filter_cfg_t OV7670_FILTER_25FPS_50HZ = {0x20, 0x98, 0x7f, 0x03, 0x03, 0x0a};
+const ov7670_filter_cfg_t OV7670_FILTER_14FPS_50HZ = {0x20, 0x4c, 0x3f, 0x06, 0x07, 0x0a};
+const ov7670_filter_cfg_t OV7670_FILTER_30FPS_60HZ_AUTO_LIGHT_FREQ_DETECT = {0x20, 0x98, 0x7f, 0x02, 0x03, 0x12};
+const ov7670_filter_cfg_t OV7670_FILTER_15FPS_60HZ_AUTO_LIGHT_FREQ_DETECT = {0x20, 0x4c, 0x3f, 0x05, 0x07, 0x12};
+const ov7670_filter_cfg_t OV7670_FILTER_25FPS_50HZ_AUTO_LIGHT_FREQ_DETECT = {0x20, 0x98, 0x7f, 0x03, 0x03, 0x1a};
+const ov7670_filter_cfg_t OV7670_FILTER_14FPS_50HZ_AUTO_LIGHT_FREQ_DETECT = {0x20, 0x4c, 0x3f, 0x06, 0x07, 0x1a};
+
+*/
+
+/*
+typedef struct ov7670_advanced_config
+{
+  ov7670_filter_cfg_t *filter;
+  ov7670_night_mode_cfg_t *night_mode;
+  ov7670_white_balance_cfg_t *white_balance;
+  ov7670_light_mode_cfg_t *light_mode;
+  ov7670_color_saturation_cfg_t *color_saturation;
+  ov7670_special_effect_cfg_t *special_effect;
+  ov7670_gamma_curve_slope_cfg_t *gamma_curve_slope;
+} ov7670_advanced_config_t;
+
+#define OV7670_ADVANCED_CONFIGURATION                                           \
+{                                                                               \
+  .filter = (ov7670_filter_cfg_t*)&OV7670_FILTER_DISABLED,                      \
+  .night_mode = (ov7670_night_mode_cfg_t*)&OV7670_NIGHT_MODE_DISABLED,          \
+  .white_balance = (ov7670_white_balance_cfg_t*)&OV7670_WHITE_BALANCE_SIMPLE,   \
+  .light_mode = (ov7670_light_mode_cfg_t*)&OV7670_LIGHT_MODE_HOME,          \
+  .color_saturation = (ov7670_color_saturation_cfg_t*)&OV7670_COLOR_SATURATION_2PLUS, \
+  .special_effect = (ov7670_special_effect_cfg_t*)&OV7670_SPECIAL_EFFECT_NORMAL, \
+  .gamma_curve_slope = (ov7670_gamma_curve_slope_cfg_t*)&OV7670_GAMMA_CURVE_SLOPE1, \
+}
+
+static const ov7670_advanced_config_t ov7670_advanced_config = OV7670_ADVANCED_CONFIGURATION;
+*/
 
 static inline void I2CSet(uint8_t device, uint8_t reg, uint8_t mask, uint8_t value) {
     // Perform a Read-Modify-Write
@@ -241,19 +438,20 @@ static inline void I2CSet(uint8_t device, uint8_t reg, uint8_t mask, uint8_t val
     //I2CWrite(device, reg, content);
     // Validate content
     uint8_t verify = SCCB_Read(device, reg);
-
     if (verify != content) {
       // register mismatch
     }
 }
 
 /* frame-rate related registers */
+/*
 #define OV7670_CLKRC_REG                0x11    ///< Clocl control
 #define OV7670_EXHCH_REG                0x2a    ///< dummy pixel insert MSB
 #define OV7670_EXHCL_REG                0x2b    ///< dummy pixel insert LSB
 #define OV7670_DBLV_REG                 0x6b
 #define OV7670_DM_LNL_REG               0x92    ///< dummy line low 8 bits
 #define OV7670_DM_LNH_REG               0x93    ///< dummy line high 8 bits
+*/
 
 /* V4L2 Video4Linux ov7670 driver from linux kernel */
 
@@ -283,6 +481,8 @@ static const int cmatrixYUV[CMATRIX_LEN]	= { 128, -128, 0, -34, -94, 128 };
 static const int cmatrix565[CMATRIX_LEN]	= { 179, -179, 0, -61, -176, 228 };
 static const int cmatrix444[CMATRIX_LEN]	= { 179, -179, 0, -61, -176, 228 };
 
+
+
 /*!
  * @brief OV7670 frame rate adjustment.
  * @param @ref ov7670_handler_t structure.
@@ -299,6 +499,90 @@ void OV7670_FrameRateAdjustment(sensor_t *sensor, ov7670_frame_rate_cfg_t *frame
   // store new clkrc
   current_ov7670_state.clkrc = frame_rate_cfg->clkrc;
 }
+
+void OV7670_UndocumentedRegisterFix(sensor_t *sensor) {
+  SCCB_Write(sensor->slv_addr, 0xb0, 0x84);
+}
+
+static void OV7670_NightMode(sensor_t *sensor, ov7670_night_mode_cfg_t *night_mode_cfg)
+{
+  I2CSet(sensor->slv_addr, OV7670_COM11_REG, 0xe0, night_mode_cfg->com11);
+  systick_sleep(1);
+}
+
+static void OV7670_SpecialEffects(sensor_t *sensor, ov7670_special_effect_cfg_t *special_effect_cfg)
+{
+  I2CSet(sensor->slv_addr, OV7670_TSLB_REG, 0xfe, special_effect_cfg->tslb);
+  SCCB_Write(sensor->slv_addr, OV7670_MANU_REG, special_effect_cfg->manu);
+  SCCB_Write(sensor->slv_addr, OV7670_MANV_REG, special_effect_cfg->manv);
+}
+
+static void OV7670_LightMode(sensor_t *sensor, ov7670_light_mode_cfg_t *light_mode_cfg)
+{
+  I2CSet(sensor->slv_addr, OV7670_COM8_REG, 0xc5, light_mode_cfg->com8);
+  I2CSet(sensor->slv_addr, OV7670_COM9_REG, 0x7a, light_mode_cfg->com9);
+  SCCB_Write(sensor->slv_addr, OV7670_RED_REG, light_mode_cfg->red);
+  SCCB_Write(sensor->slv_addr, OV7670_GGAIN_REG, light_mode_cfg->green);
+  SCCB_Write(sensor->slv_addr, OV7670_BLUE_REG, light_mode_cfg->blue);
+  SCCB_Write(sensor->slv_addr, OV7670_GAIN_REG, 0x00); systick_sleep(1);
+
+  // Exposure value
+  SCCB_Write(sensor->slv_addr, OV7670_AECH_REG, 0x00); systick_sleep(1);
+  SCCB_Write(sensor->slv_addr, OV7670_AECHH_REG, 0x00); systick_sleep(1);
+  I2CSet(sensor->slv_addr, OV7670_COM1_REG, 0x3, 0x00); systick_sleep(1);
+  // AGC/AEC stable operation region configuration
+  SCCB_Write(sensor->slv_addr, OV7670_AEW_REG, 0x75); systick_sleep(1);
+  SCCB_Write(sensor->slv_addr, OV7670_AEB_REG, 0x63); systick_sleep(1);
+  SCCB_Write(sensor->slv_addr, OV7670_VPT_REG, 0xd4); systick_sleep(1);
+}
+
+static void OV7670_WhiteBalance(sensor_t *sensor, ov7670_white_balance_cfg_t *white_balance_cfg)
+{
+  I2CSet(sensor->slv_addr, OV7670_COM8_REG, 0x02, white_balance_cfg->com8); //AWB on/off
+  SCCB_Write(sensor->slv_addr, OV7670_AWBCTR0_REG, white_balance_cfg->awbctr0);
+  SCCB_Write(sensor->slv_addr, OV7670_AWBCTR1_REG, white_balance_cfg->awbctr1);
+  SCCB_Write(sensor->slv_addr, OV7670_AWBCTR2_REG, white_balance_cfg->awbctr2);
+  SCCB_Write(sensor->slv_addr, OV7670_AWBCTR3_REG, white_balance_cfg->awbctr3);
+  SCCB_Write(sensor->slv_addr, OV7670_AWBC1_REG, white_balance_cfg->awbc1);
+  SCCB_Write(sensor->slv_addr, OV7670_AWBC2_REG, white_balance_cfg->awbc2);
+  SCCB_Write(sensor->slv_addr, OV7670_AWBC3_REG, white_balance_cfg->awbc3);
+  SCCB_Write(sensor->slv_addr, OV7670_AWBC4_REG, white_balance_cfg->awbc4);
+  SCCB_Write(sensor->slv_addr, OV7670_AWBC5_REG, white_balance_cfg->awbc5);
+  SCCB_Write(sensor->slv_addr, OV7670_AWBC6_REG, white_balance_cfg->awbc6);
+  SCCB_Write(sensor->slv_addr, 0x59, 0x91);
+  SCCB_Write(sensor->slv_addr, 0x5a, 0x94);
+  SCCB_Write(sensor->slv_addr, 0x5b, 0xaa);
+  SCCB_Write(sensor->slv_addr, 0x5c, 0x71);
+  SCCB_Write(sensor->slv_addr, 0x5d, 0x8d);
+  SCCB_Write(sensor->slv_addr, 0x5e, 0x0f);
+  SCCB_Write(sensor->slv_addr, 0x5f, 0xf0);
+  SCCB_Write(sensor->slv_addr, 0x60, 0xf0);
+  SCCB_Write(sensor->slv_addr, 0x61, 0xf0);
+  I2CSet(sensor->slv_addr, OV7670_COM16_REG, 0x08, white_balance_cfg->com16); //AWB gain on
+
+}
+
+
+static void OV7670_GammaCurveSlope(sensor_t *sensor, ov7670_gamma_curve_slope_cfg_t *gamma_curve_slope_cfg)
+{
+  SCCB_Write(sensor->slv_addr, OV7670_SLOP_REG, gamma_curve_slope_cfg->slope);
+  SCCB_Write(sensor->slv_addr, OV7670_GAM1_REG, gamma_curve_slope_cfg->gam1);
+  SCCB_Write(sensor->slv_addr, OV7670_GAM2_REG, gamma_curve_slope_cfg->gam2);
+  SCCB_Write(sensor->slv_addr, OV7670_GAM3_REG, gamma_curve_slope_cfg->gam3);
+  SCCB_Write(sensor->slv_addr, OV7670_GAM4_REG, gamma_curve_slope_cfg->gam4);
+  SCCB_Write(sensor->slv_addr, OV7670_GAM5_REG, gamma_curve_slope_cfg->gam5);
+  SCCB_Write(sensor->slv_addr, OV7670_GAM6_REG, gamma_curve_slope_cfg->gam6);
+  SCCB_Write(sensor->slv_addr, OV7670_GAM7_REG, gamma_curve_slope_cfg->gam7);
+  SCCB_Write(sensor->slv_addr, OV7670_GAM8_REG, gamma_curve_slope_cfg->gam8);
+  SCCB_Write(sensor->slv_addr, OV7670_GAM9_REG, gamma_curve_slope_cfg->gam9);
+  SCCB_Write(sensor->slv_addr, OV7670_GAM10_REG, gamma_curve_slope_cfg->gam10);
+  SCCB_Write(sensor->slv_addr, OV7670_GAM11_REG, gamma_curve_slope_cfg->gam11);
+  SCCB_Write(sensor->slv_addr, OV7670_GAM12_REG, gamma_curve_slope_cfg->gam12);
+  SCCB_Write(sensor->slv_addr, OV7670_GAM13_REG, gamma_curve_slope_cfg->gam13);
+  SCCB_Write(sensor->slv_addr, OV7670_GAM14_REG, gamma_curve_slope_cfg->gam14);
+  SCCB_Write(sensor->slv_addr, OV7670_GAM15_REG, gamma_curve_slope_cfg->gam15);
+}
+
 
 static int ov7670_store_cmatrix(sensor_t *sensor,
 		int matrix[CMATRIX_LEN])
@@ -745,26 +1029,141 @@ static int set_vflip(sensor_t *sensor, int enable)
 
 
 
-static int set_special_effect(sensor_t *sensor, sde_t sde)
+static int set_ov7670_night_mode(sensor_t *sensor, int sde) //sde_t sde)
 {
-/*
-    int ret=0;
-
-    switch (sde) {
-        case SDE_NEGATIVE:
-            ret |= SCCB_Write(sensor->slv_addr, SDE, 0x46);
-            break;
-        case SDE_NORMAL:
-            ret |= SCCB_Write(sensor->slv_addr, SDE, 0x06);
-            ret |= SCCB_Write(sensor->slv_addr, UFIX, 0x80);
-            ret |= SCCB_Write(sensor->slv_addr, UFIX, 0x80);
-            break;
-        default:
-            return -1;
+  int ret=0;
+  switch (sde)
+  {
+    case 0:
+      OV7670_NightMode(sensor,&OV7670_NIGHT_MODE_DISABLED);
+      break;
+    case 1:
+      OV7670_NightMode(sensor,&OV7670_NIGHT_MODE_AUTO_FR_DIVBY2);
+      break;
+    case 2:
+      OV7670_NightMode(sensor,&OV7670_NIGHT_MODE_AUTO_FR_DIVBY4);
+      break;
+    case 3:
+      OV7670_NightMode(sensor,&OV7670_NIGHT_MODE_AUTO_FR_DIVBY8);
+      break;
+    default:
+      break;
     }
-*/
+    OV7670_UndocumentedRegisterFix(sensor);
     return 0;
 }
+
+static int set_ov7670_light_mode(sensor_t *sensor, int sde) //sde_t sde)
+{
+  int ret=0;
+  switch (sde)
+  {
+    case 0:
+      OV7670_LightMode(sensor,&OV7670_LIGHT_MODE_DISABLED);
+      break;
+    case 1:
+      OV7670_LightMode(sensor,&OV7670_LIGHT_MODE_AUTO);
+      break;
+    case 2:
+      OV7670_LightMode(sensor,&OV7670_LIGHT_MODE_SUNNY);
+      break;
+    case 3:
+      OV7670_LightMode(sensor,&OV7670_LIGHT_MODE_CLOUDY);
+      break;
+    case 4:
+      OV7670_LightMode(sensor,&OV7670_LIGHT_MODE_OFFICE);
+        break;
+    case 5:
+      OV7670_LightMode(sensor,&OV7670_LIGHT_MODE_HOME);
+      break;
+    default:
+      break;
+    }
+    OV7670_UndocumentedRegisterFix(sensor);
+    return 0;
+}
+
+
+static int set_special_effect(sensor_t *sensor, int sde) //sde_t sde)
+{
+  int ret=0;
+
+    switch (sde)
+    {
+    case 0:
+      OV7670_SpecialEffects(sensor,&OV7670_SPECIAL_EFFECT_ANTIQUE);
+      break;
+    case 1:
+      OV7670_SpecialEffects(sensor,&OV7670_SPECIAL_EFFECT_SEPHIA);
+      break;
+    case 2:
+      OV7670_SpecialEffects(sensor,&OV7670_SPECIAL_EFFECT_BLUISH);
+      break;
+    case 3:
+      OV7670_SpecialEffects(sensor,&OV7670_SPECIAL_EFFECT_GREENISH);
+      break;
+    case 4:
+      OV7670_SpecialEffects(sensor,&OV7670_SPECIAL_EFFECT_REDISH);
+      break;
+    case 5:
+      OV7670_SpecialEffects(sensor,&OV7670_SPECIAL_EFFECT_BW);
+      break;
+    case 6:
+      OV7670_SpecialEffects(sensor,&OV7670_SPECIAL_EFFECT_NEGATIVE);
+      break;
+    case 7:
+      OV7670_SpecialEffects(sensor,&OV7670_SPECIAL_EFFECT_BW_NEGATIVE);
+      break;
+    case 8:
+      OV7670_SpecialEffects(sensor,&OV7670_SPECIAL_EFFECT_NORMAL);
+      break;
+    case 9:
+      OV7670_SpecialEffects(sensor,&OV7670_SPECIAL_EFFECT_DISABLED);
+      break;
+    default:
+      break;
+    }
+
+    return 0;
+}
+
+static int set_ov7670_gamma(sensor_t *sensor, int sde) //sde_t sde)
+  {
+    int ret=0;
+    switch (sde)
+    {
+      case 0:
+        OV7670_GammaCurveSlope(sensor,&OV7670_GAMMA_CURVE_SLOPE_DEFAULT);
+        break;
+      case 1:
+        OV7670_GammaCurveSlope(sensor,&OV7670_GAMMA_CURVE_SLOPE1);
+        break;
+      default:
+        break;
+      }
+      return 0;
+  }
+
+static int set_ov7670_whitebalance(sensor_t *sensor, int sde) //sde_t sde)
+  {
+    int ret=0;
+    switch (sde)
+    {
+      case 0:
+        OV7670_WhiteBalance(sensor,&OV7670_WHITE_BALANCE_DEFAULT);
+        break;
+      case 1:
+        OV7670_WhiteBalance(sensor,&OV7670_WHITE_BALANCE_DISABLED);
+        break;
+      case 2:
+        OV7670_WhiteBalance(sensor,&OV7670_WHITE_BALANCE_SIMPLE);
+        break;
+      default:
+        break;
+      }
+      return 0;
+  }
+
 
 /*
 static int set_register(sensor_t *sensor, uint8_t reg, uint8_t regVal)
@@ -791,8 +1190,12 @@ int ov7670_init(sensor_t *sensor)
     sensor->set_exposure_ctrl = set_exposure_ctrl;
     sensor->set_hmirror = set_hmirror;
     sensor->set_vflip = set_vflip;
-    sensor->set_special_effect = set_special_effect;
 
+    sensor->set_special_effect = set_special_effect;
+    sensor->set_ov7670_night_mode = set_ov7670_night_mode;
+    sensor->set_ov7670_light_mode = set_ov7670_light_mode;
+    sensor->set_ov7670_gamma = set_ov7670_gamma;
+    sensor->set_ov7670_whitebalance = set_ov7670_whitebalance;
 
     // Retrieve sensor's signature
     sensor->id.MIDH = SCCB_Read(sensor->slv_addr, REG_MIDH);

@@ -265,31 +265,40 @@ void capture_request() {
   xSemaphoreGive(captureSem);
 }
 
+
+static bool movie_mode = false;
+// TEST MODE!!
+
 static void captureTask(void *pvParameters) {
 
   err_t err;
   xSemaphoreGive(captureDoneSem);
   while(1) {
      //frame++;
-     xSemaphoreTake(captureSem, portMAX_DELAY);
+/*
+     if (movie_mode) {
+        xSemaphoreTake(captureDoneSem,portMAX_DELAY);
+        vTaskDelay(1 / portTICK_RATE_MS);
+        xSemaphoreGive(captureSem);
+        vTaskDelay(1 / portTICK_RATE_MS);
+     }
+*/   if (!movie_mode)
+       xSemaphoreTake(captureSem, portMAX_DELAY);
 
      // pause display while capturing... ???
      //xSemaphoreTake(dispDoneSem, portMAX_DELAY);
      err = camera_run();
      // let display know... test only
      //xSemaphoreGive(dispDoneSem);
-
-
-
-     xSemaphoreGive(captureDoneSem);
      //vTaskDelay(10 / portTICK_RATE_MS);
-     // do lcd here....
      spi_lcd_send();
      spi_lcd_wait_finish();
 
      // reorder?
      vTaskDelay(30 / portTICK_RATE_MS);
-     //xSemaphoreGive(captureDoneSem); // only return when LCD finished display
+     if (!movie_mode)
+       xSemaphoreGive(captureDoneSem);
+     // only return when LCD finished display .. sort of..
 
    } // end while(1)
 
@@ -381,8 +390,6 @@ inline uint8_t unpack(int byteNumber, uint32_t value) {
     return (value >> (byteNumber * 8));
 }
 
-static bool movie_mode = false;
-// TEST MODE!!
 static void push_framebuffer_to_tft(void *pvParameters) {
   uint16_t line[2][320];
   int x, y; //, frame=0;
@@ -582,11 +589,11 @@ void captureTask( void * pvParameters ) {
 
 static int sys_stats_cb(const sarg_result *res)
 {
-    static int level = 0;
-    static size_t free8start, free32start, free8, free32, tstk;
-    level = res->int_val;
-    static int length = 0;
-    if (level == 0) {
+     uint8_t level = 0;
+     size_t free8start, free32start, free8, free32, tstk;
+     level = res->int_val;
+     uint8_t length = 0;
+     if (level == 0) {
       free8start = xPortGetMinimumEverFreeHeapSizeCaps(MALLOC_CAP_8BIT);
       free32start = xPortGetMinimumEverFreeHeapSizeCaps(MALLOC_CAP_32BIT);
       free8=xPortGetFreeHeapSizeCaps(MALLOC_CAP_8BIT);
@@ -595,27 +602,32 @@ static int sys_stats_cb(const sarg_result *res)
       length += sprintf(telnet_cmd_response_buff+length,
         "Stack: %db, Free 8-bit=%db, free 32-bit=%db, min 8-bit=%db, min 32-bit=%db.\n",
         tstk,free8,free32, free8start, free32start);
-    } else if (level == 1) {
+     } else if (level == 1) {
       //vTaskList(telnet_cmd_response_buff);
       //vTaskGetRunTimeStats(telnet_cmd_response_buff);
       length += sprintf(telnet_cmd_response_buff+length, "not implemented\n");
-
-    } else if (level ==2) {
-
-        movie_mode = !movie_mode;
-        if (movie_mode ) {
-          capture_request();
-        } else {
-          capture_wait_finish();
-        }
-        // start capture task!
-
-        length += sprintf(telnet_cmd_response_buff+length, "snapshot capture done\n");
-        // TESTING !@#!#!@
-    }
+     }
 
     telnet_esp32_sendData((uint8_t *)telnet_cmd_response_buff, strlen(telnet_cmd_response_buff));
     return SARG_ERR_SUCCESS;
+}
+
+static int  videomode_cb(const sarg_result *res) {
+      int speed = 0;
+      uint8_t length = 0;
+      speed = res->int_val;
+      // let capture task handle this...
+       movie_mode = !movie_mode;
+       if (movie_mode ) {
+         // start capture task!
+         length += sprintf(telnet_cmd_response_buff+length, "video mode on\n");
+         capture_request();
+       } else {
+         capture_wait_finish();
+         length += sprintf(telnet_cmd_response_buff+length, "video mode off\n");
+       }
+       telnet_esp32_sendData((uint8_t *)telnet_cmd_response_buff, strlen(telnet_cmd_response_buff));
+      return SARG_ERR_SUCCESS;
 }
 
 static int  ov7670_xclck_cb(const sarg_result *res) {
@@ -720,6 +732,7 @@ static int  ov7670_contrast_cb(const sarg_result *res) {
   return SARG_ERR_SUCCESS;
 }
 
+
 static int  ov7670_hflip_cb(const sarg_result *res) {
   //set_vflip
   bool onoff = false;
@@ -745,9 +758,68 @@ static int  ov7670_vflip_cb(const sarg_result *res) {
 }
 
 
+static int  ov7670_lightmode_cb(const sarg_result *res) {
+  int level = 0;
+  level = res->int_val;
+  ESP_LOGD(TAG, "Switch lightmode (0 - 5) to %d",level);
+  sensor_t* s_sensor = get_cam_sensor();
+  if (s_sensor != NULL) {
+    s_sensor->set_ov7670_light_mode(s_sensor,level);
+  }
+  return SARG_ERR_SUCCESS;
+}
+
+
+static int  ov7670_nightmode_cb(const sarg_result *res) {
+  int level = 0;
+  level = res->int_val;
+  ESP_LOGD(TAG, "Switch nightmode effect (0 - 3) to %d",level);
+  sensor_t* s_sensor = get_cam_sensor();
+  if (s_sensor != NULL) {
+    s_sensor->set_ov7670_night_mode(s_sensor,level);
+  }
+  return SARG_ERR_SUCCESS;
+}
+
+
+static int  ov7670_special_effects_cb(const sarg_result *res) {
+  int level = 0;
+  level = res->int_val;
+  ESP_LOGD(TAG, "Switch special effect (0 - 8) to %d",level);
+  sensor_t* s_sensor = get_cam_sensor();
+  if (s_sensor != NULL) {
+    s_sensor->set_special_effect(s_sensor,level);
+  }
+  return SARG_ERR_SUCCESS;
+}
+
+
+static int  ov7670_gamma_cb(const sarg_result *res) {
+  int level = 0;
+  level = res->int_val;
+  ESP_LOGD(TAG, "Switch gamma (0 - 1) to %d",level);
+  sensor_t* s_sensor = get_cam_sensor();
+  if (s_sensor != NULL) {
+    s_sensor->set_ov7670_gamma(s_sensor,level);
+  }
+  return SARG_ERR_SUCCESS;
+}
+
+static int  ov7670_whitebalance_cb(const sarg_result *res) {
+  int level = 0;
+  level = res->int_val;
+  ESP_LOGD(TAG, "Switch whitebalance effect (0 - 2) to %d",level);
+  sensor_t* s_sensor = get_cam_sensor();
+  if (s_sensor != NULL) {
+    s_sensor->set_ov7670_whitebalance(s_sensor,level);
+  }
+  return SARG_ERR_SUCCESS;
+}
+
+
 const static sarg_opt my_opts[] = {
     {"h", "help", "show help text", BOOL, help_cb},
-    {"v", "stats", "system stats (0=mem,1=tasks)", INT, sys_stats_cb},
+    {"s", "stats", "system stats (0=mem,1=tasks)", INT, sys_stats_cb},
     {NULL, "clock", "set camera xclock frequency", INT, ov7670_xclck_cb},
     {NULL, "pixformat", "set pixel format (yuv422, rgb565)", STRING, ov7670_pixformat_cb},
     {NULL, "framerate", "set framerate (14,15,25,30)", INT, ov7670_framerate_cb},
@@ -758,6 +830,12 @@ const static sarg_opt my_opts[] = {
     {NULL, "contrast", "set contrast (-4 to 4)", INT, ov7670_contrast_cb},
     {NULL, "hflip", "flip horizontal (0=off/1=on)", INT, ov7670_hflip_cb},
     {NULL, "vflip", "flip vertical (0=off/1=on)", INT, ov7670_vflip_cb},
+    {NULL, "light", "ov7670 light mode (0 - 5)", INT, ov7670_lightmode_cb},
+    {NULL, "night", "ov7670 night mode (0 - 3)", INT, ov7670_nightmode_cb},
+    {NULL, "effect", "special effects (0 - 8)", INT, ov7670_special_effects_cb},
+    {NULL, "gamma", "ov7670 gamma mode (0=disabled,1=slope1)", INT, ov7670_gamma_cb},
+    {NULL, "whitebalance", "ov7670 whitebalance (0,1,2)", INT, ov7670_whitebalance_cb},
+    {NULL, "video", "video mode (0=off,1=on)", INT, videomode_cb},
     {NULL, NULL, NULL, INT, NULL}
 };
 
@@ -936,6 +1014,9 @@ static void convert_fb32bit_line_to_bmp565(uint32_t *srcline, uint8_t *destline,
   }
 }
 
+
+// TODO: handle http request while videomode on
+
 static void http_server_netconn_serve(struct netconn *conn)
 {
     struct netbuf *inbuf;
@@ -1022,7 +1103,7 @@ static void http_server_netconn_serve(struct netconn *conn)
                     }
                 }
                 ESP_LOGD(TAG, "Stream ended.");
-                //ESP_LOGI(TAG, "task stack: %d", uxTaskGetStackHighWaterMark(NULL));
+                ESP_LOGI(TAG, "task stack: %d", uxTaskGetStackHighWaterMark(NULL));
             } else {
                 if (s_pixel_format == CAMERA_PF_JPEG) {
                     netconn_write(conn, http_jpg_hdr, sizeof(http_jpg_hdr) - 1, NETCONN_NOCOPY);
@@ -1162,9 +1243,28 @@ void app_main()
     esp_log_level_set("wifi", ESP_LOG_WARN);
     esp_log_level_set("gpio", ESP_LOG_WARN);
 
+    ESP_LOGI(TAG, "Allocating Frame Buffer memory...");
+    currFbPtr=pvPortMallocCaps(320*240*2, MALLOC_CAP_32BIT);
+    vTaskDelay(1000 / portTICK_RATE_MS);
+    ESP_LOGI(TAG,"Starting nvs_flash_init");
     nvs_flash_init();
 
     ESP_LOGI(TAG,"Starting ESPILICAM");
+
+
+
+            free8=xPortGetFreeHeapSizeCaps(MALLOC_CAP_8BIT);
+            free32=xPortGetFreeHeapSizeCaps(MALLOC_CAP_32BIT);
+            ESP_LOGI(TAG, "Free 8bit-capable memory: %dK, 32-bit capable memory %dK\n", free8, free32);
+
+            initialise_wifi();
+
+            // VERY UNSTABLE without this delay after init'ing wifi...
+            // however, much more stable with a new Power Supply
+            vTaskDelay(5000 / portTICK_RATE_MS);
+
+            ESP_LOGI(TAG, "Wifi Initialized...");
+
 
     // report memory at startup
   //  ESP_LOGI(TAG,"Starting Memory Allocation for Display");
@@ -1174,8 +1274,7 @@ void app_main()
     ESP_LOGI(TAG, "Free 8bit-capable memory: %dK, 32-bit capable memory %dK\n", free8, free32);
 
 
-    ESP_LOGD(TAG, "Allocating Frame Buffer memory...");
-    currFbPtr=pvPortMallocCaps(320*240*2, MALLOC_CAP_32BIT);
+    // allocate here?
 
 //    ESP_LOGI(TAG,"Setup ILI9341");
 
@@ -1209,9 +1308,18 @@ void app_main()
     //ESP_LOGI(TAG, "Call ili_init");
     ili_init(spi);
 
-    dispSem=xSemaphoreCreateBinary();
-    dispDoneSem=xSemaphoreCreateBinary();
+/*
+    free8=xPortGetFreeHeapSizeCaps(MALLOC_CAP_8BIT);
+    free32=xPortGetFreeHeapSizeCaps(MALLOC_CAP_32BIT);
+    ESP_LOGI(TAG, "Free 8bit-capable memory: %dK, 32-bit capable memory %dK\n", free8, free32);
 
+    initialise_wifi();
+
+    // VERY UNSTABLE without this delay after init'ing wifi...
+    vTaskDelay(10000 / portTICK_RATE_MS);
+
+    ESP_LOGD(TAG, "Wifi Initialized...");
+*/
 
     // camera init
 
@@ -1225,7 +1333,7 @@ void app_main()
         s_pixel_format = CAMERA_PIXEL_FORMAT;
         config.frame_size = CAMERA_FRAME_SIZE;
     } else if (camera_model == CAMERA_OV7670) {
-        ESP_LOGI(TAG, "Detected OV7670 camera, using grayscale bitmap format");
+        ESP_LOGI(TAG, "Detected OV7670 camera");
         s_pixel_format = CAMERA_PIXEL_FORMAT;
         config.frame_size = CAMERA_FRAME_SIZE;
     } else if (camera_model == CAMERA_OV2640) {
@@ -1238,22 +1346,11 @@ void app_main()
         return;
     }
 
+
+
     free8=xPortGetFreeHeapSizeCaps(MALLOC_CAP_8BIT);
     free32=xPortGetFreeHeapSizeCaps(MALLOC_CAP_32BIT);
     ESP_LOGI(TAG, "Free 8bit-capable memory: %dK, 32-bit capable memory %dK\n", free8, free32);
-
-    initialise_wifi();
-
-    ESP_LOGD(TAG, "Wifi Initialized...");
-    free8=xPortGetFreeHeapSizeCaps(MALLOC_CAP_8BIT);
-    free32=xPortGetFreeHeapSizeCaps(MALLOC_CAP_32BIT);
-    ESP_LOGI(TAG, "Free 8bit-capable memory: %dK, 32-bit capable memory %dK\n", free8, free32);
-
-    //delay(10000);
-    // VERY UNSTABLE without this delay after init'ing wifi...
-    vTaskDelay(2000 / portTICK_RATE_MS);
-
-
 
     config.displayBuffer = currFbPtr;
     config.pixel_format = s_pixel_format;
@@ -1263,51 +1360,44 @@ void app_main()
         return;
     }
 
+    vTaskDelay(2000 / portTICK_RATE_MS);
+
+    dispSem=xSemaphoreCreateBinary();
+    dispDoneSem=xSemaphoreCreateBinary();
+    xSemaphoreGive(dispDoneSem);
+    ESP_LOGD(TAG, "Starting ILI9341 display task...");
+    xTaskCreatePinnedToCore(&push_framebuffer_to_tft, "push_framebuffer_to_tft", 4096, NULL, 5, NULL,1);
+
+    captureSem=xSemaphoreCreateBinary();
+    captureDoneSem=xSemaphoreCreateBinary();
+    ESP_LOGD(TAG, "Starting OV7670 capture task...");
+    xTaskCreatePinnedToCore(&captureTask, "captureTask", 2048, NULL, 5, NULL,1);
 
     vTaskDelay(1000 / portTICK_RATE_MS);
 
-//    ESP_LOGI(TAG, "Free heap: %u", xPortGetFreeHeapSize());
-//    ESP_LOGI(TAG, "task stack: %d", uxTaskGetStackHighWaterMark(NULL));
+// wifi?
 
 
-    ESP_LOGI(TAG, "Camera demo ready");
-    if (s_pixel_format == CAMERA_PF_GRAYSCALE) {
-        ESP_LOGI(TAG, "open http://" IPSTR "/get for a single grayscale bitmap (no headers)", IP2STR(&s_ip_addr));
-        ESP_LOGI(TAG, "open http://" IPSTR "/pgm for a single image/x-portable-graymap image", IP2STR(&s_ip_addr));
-    }
-    if (s_pixel_format == CAMERA_PF_RGB565) {
-        ESP_LOGI(TAG, "open http://" IPSTR "/bmp for single image/bitmap image", IP2STR(&s_ip_addr));
-        ESP_LOGI(TAG, "open http://" IPSTR "/stream for multipart/x-mixed-replace stream of bitmaps", IP2STR(&s_ip_addr));
-    }
-    if (s_pixel_format == CAMERA_PF_JPEG) {
-        ESP_LOGI(TAG, "open http://" IPSTR "/jpg for single image/jpg image", IP2STR(&s_ip_addr));
-        ESP_LOGI(TAG, "open http://" IPSTR "/stream for multipart/x-mixed-replace stream of JPEGs", IP2STR(&s_ip_addr));
-    }
+
+
 
     ESP_LOGD(TAG, "Starting http_server task...");
-//    xTaskCreate(&http_server, "http_server", 4096, NULL, 5, NULL);
-    xTaskCreatePinnedToCore(&http_server, "http_server", 8048, NULL, 5, NULL,1);
+    // keep an eye on stack... 5784 min with 8048 stck size last count..
+    xTaskCreatePinnedToCore(&http_server, "http_server", 4096, NULL, 5, NULL,1);
 
-    ESP_LOGD(TAG, "Starting ILI9341 display task...");
-    xSemaphoreGive(dispDoneSem);
-//    xTaskCreate(&push_framebuffer_to_tft, "push_framebuffer_to_tft", 4096, NULL, 5, NULL);
-    //TaskHandle_t th =
-    xTaskCreatePinnedToCore(&push_framebuffer_to_tft, "push_framebuffer_to_tft", 4096, NULL, 5, NULL,1);
-    //camera_set_display_task(&th);
-    //vTaskDelay(1000 / portTICK_RATE_MS);
+    ESP_LOGI(TAG, "open http://" IPSTR "/bmp for single image/bitmap image", IP2STR(&s_ip_addr));
+    ESP_LOGI(TAG, "open http://" IPSTR "/stream for multipart/x-mixed-replace stream of bitmaps", IP2STR(&s_ip_addr));
+    ESP_LOGI(TAG, "open http://" IPSTR "/get for raw image as stored in framebuffer ", IP2STR(&s_ip_addr));
 
-    // start telnet task after IP is assigned...
-    ESP_LOGD(TAG, "Starting Telnetd task...");
-    xTaskCreatePinnedToCore(&telnetTask, "telnetTask", 8048, NULL, 5, NULL, 1);
+    ESP_LOGD(TAG, "Starting telnetd task...");
+    // keep an eye on this - stack free was at 4620 at min with 8048
+    xTaskCreatePinnedToCore(&telnetTask, "telnetTask", 5120, NULL, 5, NULL, 1);
 
-    //ESP_LOGI(TAG, "Free heap: %u", xPortGetFreeHeapSize());
-    //ESP_LOGI(TAG, "task stack: %d", uxTaskGetStackHighWaterMark(NULL));
-    captureSem=xSemaphoreCreateBinary();
-    captureDoneSem=xSemaphoreCreateBinary();
+    ESP_LOGI(TAG, "telnet to \"telnet " IPSTR "\" to access command console, type \"help\" for commands", IP2STR(&s_ip_addr));
 
-    vTaskDelay(10000 / portTICK_RATE_MS);
-    //TaskHandle_t th2 =
-    xTaskCreatePinnedToCore(&captureTask, "captureTask", 4096, NULL, 5, NULL,1);
-    //TaskHandle_t th2 = xTaskCreate(&captureTask, "captureTask", 4096, NULL, 5, NULL);
+    ESP_LOGI(TAG, "Free heap: %u", xPortGetFreeHeapSize());
+    ESP_LOGI(TAG, "task stack: %d", uxTaskGetStackHighWaterMark(NULL));
+
+    ESP_LOGI(TAG, "Camera demo ready.");
 
 }
