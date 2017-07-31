@@ -20,7 +20,18 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
-#include "esp_heap_alloc_caps.h"
+
+// #define ESPIDFV21RC 1
+
+#ifdef ESPIDFV21RC
+  #include "esp_heap_alloc_caps.h"
+#else
+  #include "esp_heap_alloc_caps.h"
+  #include "esp_heap_caps.h"
+#endif
+
+
+
 #include "esp_system.h"
 #include "esp_wifi.h"
 #include "esp_event_loop.h"
@@ -266,40 +277,53 @@ void capture_request() {
 }
 
 
-static bool movie_mode = false;
-// TEST MODE!!
+static EventGroupHandle_t espilicam_event_group;
+EventBits_t uxBits;
+const int MOVIEMODE_ON_BIT = BIT0;
+
+
+
+bool is_moviemode_on()
+{
+    return (xEventGroupGetBits(espilicam_event_group) & MOVIEMODE_ON_BIT) ? 1 : 0;
+}
+
+static void set_moviemode(bool c) {
+    if (is_moviemode_on() == c) {
+        return;
+    } else {
+      if (c) {
+      xEventGroupSetBits(espilicam_event_group, MOVIEMODE_ON_BIT);
+      } else {
+      xEventGroupClearBits(espilicam_event_group, MOVIEMODE_ON_BIT);
+      }
+    }
+}
+
+static uint16_t lcd_delay_ms = 100;
 
 static void captureTask(void *pvParameters) {
 
   err_t err;
+  bool movie_mode = false;
   xSemaphoreGive(captureDoneSem);
   while(1) {
      //frame++;
-/*
-     if (movie_mode) {
-        xSemaphoreTake(captureDoneSem,portMAX_DELAY);
-        vTaskDelay(1 / portTICK_RATE_MS);
-        xSemaphoreGive(captureSem);
-        vTaskDelay(1 / portTICK_RATE_MS);
-     }
-*/   if (!movie_mode)
-       xSemaphoreTake(captureSem, portMAX_DELAY);
+     movie_mode = is_moviemode_on();
+     if (!movie_mode)
+     xSemaphoreTake(captureSem, portMAX_DELAY);
 
-     // pause display while capturing... ???
-     //xSemaphoreTake(dispDoneSem, portMAX_DELAY);
      err = camera_run();
-     // let display know... test only
-     //xSemaphoreGive(dispDoneSem);
-     //vTaskDelay(10 / portTICK_RATE_MS);
+
      spi_lcd_send();
      spi_lcd_wait_finish();
 
      // reorder?
-     vTaskDelay(30 / portTICK_RATE_MS);
+     vTaskDelay(lcd_delay_ms / portTICK_RATE_MS);
+
      if (!movie_mode)
        xSemaphoreGive(captureDoneSem);
      // only return when LCD finished display .. sort of..
-
    } // end while(1)
 
 }
@@ -517,6 +541,7 @@ static EventGroupHandle_t wifi_event_group;
 const int CONNECTED_BIT = BIT0;
 static ip4_addr_t s_ip_addr;
 
+
 // command parser...
 #include "smallargs.h"
 
@@ -590,17 +615,26 @@ void captureTask( void * pvParameters ) {
 static int sys_stats_cb(const sarg_result *res)
 {
      uint8_t level = 0;
-     size_t free8start, free32start, free8, free32, tstk;
+     size_t free8start=0, free32start=0, free8=0, free32=0, tstk=0;
      level = res->int_val;
      uint8_t length = 0;
      if (level == 0) {
-      free8start = xPortGetMinimumEverFreeHeapSizeCaps(MALLOC_CAP_8BIT);
-      free32start = xPortGetMinimumEverFreeHeapSizeCaps(MALLOC_CAP_32BIT);
-      free8=xPortGetFreeHeapSizeCaps(MALLOC_CAP_8BIT);
-      free32=xPortGetFreeHeapSizeCaps(MALLOC_CAP_32BIT);
+
+       #ifdef ESPIDFV21RC
+           free8=xPortGetFreeHeapSizeCaps(MALLOC_CAP_8BIT);
+           free32=xPortGetFreeHeapSizeCaps(MALLOC_CAP_32BIT);
+           free8start=xPortGetMinimumEverFreeHeapSizeCaps(MALLOC_CAP_8BIT);
+           free32start=xPortGetMinimumEverFreeHeapSizeCaps(MALLOC_CAP_32BIT);
+       #else
+           free32=heap_caps_get_largest_free_block(MALLOC_CAP_32BIT);
+           free8=heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+           free8start=heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT);
+           free32start=heap_caps_get_minimum_free_size(MALLOC_CAP_32BIT);
+       #endif
+
       tstk = uxTaskGetStackHighWaterMark(NULL);
       length += sprintf(telnet_cmd_response_buff+length,
-        "Stack: %db, Free 8-bit=%db, free 32-bit=%db, min 8-bit=%db, min 32-bit=%db.\n",
+        "Stack: %db, free 8-bit=%db, free 32-bit=%db, min 8-bit=%db, min 32-bit=%db.\n",
         tstk,free8,free32, free8start, free32start);
      } else if (level == 1) {
       //vTaskList(telnet_cmd_response_buff);
@@ -613,11 +647,25 @@ static int sys_stats_cb(const sarg_result *res)
 }
 
 static int  videomode_cb(const sarg_result *res) {
-      int speed = 0;
+      int bval = 0;
       uint8_t length = 0;
-      speed = res->int_val;
+      bval = res->int_val;
+      bool movie_mode = false;
       // let capture task handle this...
-       movie_mode = !movie_mode;
+      if (bval == 0) movie_mode = false;
+      else if (bval == 1) movie_mode = true;
+      else {
+      (lcd_delay_ms = res->int_val);
+      movie_mode = true;
+      }
+       // set event group...
+       set_moviemode(movie_mode);
+/*
+       if (movie_mode)
+        xEventGroupSetBits(espilicam_event_group, MOVIEMODE_ON_BIT);
+       else
+        xEventGroupClearBits(espilicam_event_group, MOVIEMODE_ON_BIT);
+*/
        if (movie_mode ) {
          // start capture task!
          length += sprintf(telnet_cmd_response_buff+length, "video mode on\n");
@@ -923,22 +971,21 @@ uint8_t getHexVal(char c)
 }
 
 static void recvData(uint8_t *buffer, size_t size) {
-  char cmdRecptMessage[100];
+//  char cmdRecptMessage[100];
   int length = 0;
   ESP_LOGD(TAG, "We received: %.*s", size, buffer);
   handle_command(buffer, size);
   // have to wait for callback for actual response.. echo recpt for now
-  length += sprintf(cmdRecptMessage, "%s","#: ");
-  if (strlen(telnet_cmd_response_buff) > 0)
-    sprintf(cmdRecptMessage+length, "%s\n", telnet_cmd_response_buff);
-  telnet_esp32_sendData((uint8_t *)cmdRecptMessage, strlen(cmdRecptMessage));
+//  length += sprintf(cmdRecptMessage, "%s","#: ");
+//  if (strlen(telnet_cmd_response_buff) > 0)
+//    sprintf(cmdRecptMessage+length, "%s\n", telnet_cmd_response_buff);
+//  telnet_esp32_sendData((uint8_t *)cmdRecptMessage, strlen(cmdRecptMessage));
 }
 
 static void telnetTask(void *data) {
-  ESP_LOGD(TAG, ">> telnetTask");
+  ESP_LOGD(TAG, "Listening for telnet clients...");
   telnet_esp32_listenForClients(recvData);
-  ESP_LOGD(TAG, "<< telnetTask");
-
+  ESP_LOGD(TAG, "stopping telnetTask");
   ESP_LOGI(TAG, "task stack: %d", uxTaskGetStackHighWaterMark(NULL));
   vTaskDelete(NULL);
 }
@@ -1033,12 +1080,18 @@ static void http_server_netconn_serve(struct netconn *conn)
          there are other formats for GET, and we're keeping it very simple )*/
         if (buflen >= 5 && buf[0] == 'G' && buf[1] == 'E' && buf[2] == 'T'
                 && buf[3] == ' ' && buf[4] == '/') {
+
+          // disable videomode (autocapture) to allow streaming...
+          bool s_moviemode = is_moviemode_on();
+          set_moviemode(false);
+
           /* Send the HTTP header
              * subtract 1 from the size, since we dont send the \0 in the string
              * NETCONN_NOCOPY: our data is const static, so no need to copy it
              */
           netconn_write(conn, http_hdr, sizeof(http_hdr) - 1,
                     NETCONN_NOCOPY);
+
 
            //check if a stream is requested.
            if (buf[5] == 's') {
@@ -1056,8 +1109,10 @@ static void http_server_netconn_serve(struct netconn *conn)
                     err = camera_run();
                     PAUSE_DISPLAY = false;
 */
+
                     capture_request();
                     capture_wait_finish();
+
 
                     //spi_lcd_send();
                     //spi_lcd_wait_finish();
@@ -1158,14 +1213,11 @@ static void http_server_netconn_serve(struct netconn *conn)
                   ESP_LOGD(TAG, "Image requested.");
                   //ESP_LOGI(TAG, "task stack: %d", uxTaskGetStackHighWaterMark(NULL));
 
-                  //PAUSE_DISPLAY = true;
-                  //err = camera_run();
-                  //PAUSE_DISPLAY = false;
+                  bool s_moviemode = is_moviemode_on();
+                  set_moviemode(false);
                   capture_request();
                   capture_wait_finish();
-
-                  //spi_lcd_send();
-                  //spi_lcd_wait_finish();
+                  set_moviemode(s_moviemode);
 
                   //ESP_LOGI(TAG, "task stack: %d", uxTaskGetStackHighWaterMark(NULL));
 
@@ -1193,6 +1245,8 @@ static void http_server_netconn_serve(struct netconn *conn)
                   } // handle .bmp and std gets...
 
             }
+        // end GET request:
+        set_moviemode(s_moviemode);
         }
     }
     /* Close the connection (server closes in HTTP) */
@@ -1227,9 +1281,11 @@ static spi_bus_config_t buscfg={
     .quadwp_io_num=-1,
     .quadhd_io_num=-1
 };
+
 static spi_device_interface_config_t devcfg={
-    .clock_speed_hz=10000000,               //Clock out at 10 MHz
-    //.clock_speed_hz=26000000,               //Clock out at 26 MHz. Yes, that's heavily overclocked.
+//    .clock_speed_hz=10000000,               //Clock out at 10 MHz - too slow
+    .clock_speed_hz=20000000, // works well... but can it hold out for 10+ mins?
+//    .clock_speed_hz=26000000,               //Clock out at 26 MHz. Yes, that's heavily overclocked.
     .mode=0,                                //SPI mode 0
     .spics_io_num=PIN_NUM_CS,               //CS pin
     .queue_size=7,                          //We want to be able to queue 7 transactions at a time
@@ -1249,53 +1305,24 @@ void app_main()
     ESP_LOGI(TAG,"Starting nvs_flash_init");
     nvs_flash_init();
 
+    vTaskDelay(3000 / portTICK_RATE_MS);
+
     ESP_LOGI(TAG,"Starting ESPILICAM");
+    ESP_LOGI(TAG, "Free heap: %u", xPortGetFreeHeapSize());
+
+    initialise_wifi();
+
+    // VERY UNSTABLE without this delay after init'ing wifi...
+    // however, much more stable with a new Power Supply
+    vTaskDelay(5000 / portTICK_RATE_MS);
+
+    ESP_LOGI(TAG, "Wifi Initialized...");
+    ESP_LOGI(TAG, "Free heap: %u", xPortGetFreeHeapSize());
 
 
-
-            free8=xPortGetFreeHeapSizeCaps(MALLOC_CAP_8BIT);
-            free32=xPortGetFreeHeapSizeCaps(MALLOC_CAP_32BIT);
-            ESP_LOGI(TAG, "Free 8bit-capable memory: %dK, 32-bit capable memory %dK\n", free8, free32);
-
-            initialise_wifi();
-
-            // VERY UNSTABLE without this delay after init'ing wifi...
-            // however, much more stable with a new Power Supply
-            vTaskDelay(5000 / portTICK_RATE_MS);
-
-            ESP_LOGI(TAG, "Wifi Initialized...");
-
-
-    // report memory at startup
-  //  ESP_LOGI(TAG,"Starting Memory Allocation for Display");
-
-    free8=xPortGetFreeHeapSizeCaps(MALLOC_CAP_8BIT);
-    free32=xPortGetFreeHeapSizeCaps(MALLOC_CAP_32BIT);
-    ESP_LOGI(TAG, "Free 8bit-capable memory: %dK, 32-bit capable memory %dK\n", free8, free32);
-
-
-    // allocate here?
-
-//    ESP_LOGI(TAG,"Setup ILI9341");
 
     esp_err_t ret;
-/*
-    spi_bus_config_t buscfg={
-        .miso_io_num=PIN_NUM_MISO,
-        .mosi_io_num=PIN_NUM_MOSI,
-        .sclk_io_num=PIN_NUM_CLK,
-        .quadwp_io_num=-1,
-        .quadhd_io_num=-1
-    };
-    spi_device_interface_config_t devcfg={
-        .clock_speed_hz=10000000,               //Clock out at 10 MHz
-        //.clock_speed_hz=26000000,               //Clock out at 26 MHz. Yes, that's heavily overclocked.
-        .mode=0,                                //SPI mode 0
-        .spics_io_num=PIN_NUM_CS,               //CS pin
-        .queue_size=7,                          //We want to be able to queue 7 transactions at a time
-        .pre_cb=ili_spi_pre_transfer_callback,  //Specify pre-transfer callback to handle D/C line
-    };
-*/
+
     //Initialize the SPI bus
     //ESP_LOGI(TAG, "Call spi_bus_initialize");
     ret=spi_bus_initialize(HSPI_HOST, &buscfg, 1);
@@ -1307,19 +1334,6 @@ void app_main()
     //Initialize the LCD
     //ESP_LOGI(TAG, "Call ili_init");
     ili_init(spi);
-
-/*
-    free8=xPortGetFreeHeapSizeCaps(MALLOC_CAP_8BIT);
-    free32=xPortGetFreeHeapSizeCaps(MALLOC_CAP_32BIT);
-    ESP_LOGI(TAG, "Free 8bit-capable memory: %dK, 32-bit capable memory %dK\n", free8, free32);
-
-    initialise_wifi();
-
-    // VERY UNSTABLE without this delay after init'ing wifi...
-    vTaskDelay(10000 / portTICK_RATE_MS);
-
-    ESP_LOGD(TAG, "Wifi Initialized...");
-*/
 
     // camera init
 
@@ -1346,11 +1360,22 @@ void app_main()
         return;
     }
 
-
-
+#ifdef ESPIDFV21RC
     free8=xPortGetFreeHeapSizeCaps(MALLOC_CAP_8BIT);
     free32=xPortGetFreeHeapSizeCaps(MALLOC_CAP_32BIT);
-    ESP_LOGI(TAG, "Free 8bit-capable memory: %dK, 32-bit capable memory %dK\n", free8, free32);
+    free8start=xPortGetMinimumEverFreeHeapSizeCaps(MALLOC_CAP_8BIT);
+    free32start=xPortGetMinimumEverFreeHeapSizeCaps(MALLOC_CAP_32BIT);
+#else
+    free32=heap_caps_get_largest_free_block(MALLOC_CAP_32BIT);
+    free8=heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    free8start=heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT);
+    free32start=heap_caps_get_minimum_free_size(MALLOC_CAP_32BIT);
+#endif
+
+    ESP_LOGI(TAG, "Free heap: %u", xPortGetFreeHeapSize());
+    ESP_LOGI(TAG, "Free (largest free blocks) 8bit-capable memory : %dK, 32-bit capable memory %dK\n", free8, free32);
+    ESP_LOGI(TAG, "Free (min free size) 8bit-capable memory : %dK, 32-bit capable memory %dK\n", free8start, free32start);
+
 
     config.displayBuffer = currFbPtr;
     config.pixel_format = s_pixel_format;
@@ -1364,22 +1389,19 @@ void app_main()
 
     dispSem=xSemaphoreCreateBinary();
     dispDoneSem=xSemaphoreCreateBinary();
+    espilicam_event_group = xEventGroupCreate();
+
     xSemaphoreGive(dispDoneSem);
     ESP_LOGD(TAG, "Starting ILI9341 display task...");
     xTaskCreatePinnedToCore(&push_framebuffer_to_tft, "push_framebuffer_to_tft", 4096, NULL, 5, NULL,1);
 
     captureSem=xSemaphoreCreateBinary();
     captureDoneSem=xSemaphoreCreateBinary();
+
     ESP_LOGD(TAG, "Starting OV7670 capture task...");
     xTaskCreatePinnedToCore(&captureTask, "captureTask", 2048, NULL, 5, NULL,1);
 
     vTaskDelay(1000 / portTICK_RATE_MS);
-
-// wifi?
-
-
-
-
 
     ESP_LOGD(TAG, "Starting http_server task...");
     // keep an eye on stack... 5784 min with 8048 stck size last count..
@@ -1395,7 +1417,22 @@ void app_main()
 
     ESP_LOGI(TAG, "telnet to \"telnet " IPSTR "\" to access command console, type \"help\" for commands", IP2STR(&s_ip_addr));
 
+    #ifdef ESPIDFV21RC
+        free8=xPortGetFreeHeapSizeCaps(MALLOC_CAP_8BIT);
+        free32=xPortGetFreeHeapSizeCaps(MALLOC_CAP_32BIT);
+        free8start=xPortGetMinimumEverFreeHeapSizeCaps(MALLOC_CAP_8BIT);
+        free32start=xPortGetMinimumEverFreeHeapSizeCaps(MALLOC_CAP_32BIT);
+    #else
+        free32=heap_caps_get_largest_free_block(MALLOC_CAP_32BIT);
+        free8=heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+        free8start=heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT);
+        free32start=heap_caps_get_minimum_free_size(MALLOC_CAP_32BIT);
+    #endif
+
     ESP_LOGI(TAG, "Free heap: %u", xPortGetFreeHeapSize());
+    ESP_LOGI(TAG, "Free (largest free blocks) 8bit-capable memory : %dK, 32-bit capable memory %dK\n", free8, free32);
+    ESP_LOGI(TAG, "Free (min free size) 8bit-capable memory : %dK, 32-bit capable memory %dK\n", free8start, free32start);
+
     ESP_LOGI(TAG, "task stack: %d", uxTaskGetStackHighWaterMark(NULL));
 
     ESP_LOGI(TAG, "Camera demo ready.");
