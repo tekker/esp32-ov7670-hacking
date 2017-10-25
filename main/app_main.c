@@ -525,6 +525,7 @@ const int CONNECTED_BIT = BIT0;
 static ip4_addr_t s_ip_addr;
 
 
+// TODO: Refactor to seperate source file
 // graphics code
 
 #include "DejaVuSans18.h"
@@ -555,7 +556,7 @@ uint16_t      textcolor, textbgcolor ;
 bool _transparent = true;
 
 // FRAMEBUFFER reference...
-static uint16_t                 *frameBuffer;
+//static uint16_t                 *frameBuffer;
 
 
 typedef struct propFont
@@ -581,7 +582,6 @@ typedef struct current_font {
 _current_font cfont ;
 
 static void Init_UTFT_GFX_Fonts() {
-
     cfont.font     = NULL ;
     cfont.x_size   = 0 ;
     cfont.y_size   = 0 ;
@@ -590,7 +590,6 @@ static void Init_UTFT_GFX_Fonts() {
     textcolor      = VGA_WHITE;
     textbgcolor    = VGA_BLACK;
 }
-
 
 static void setFont(uint8_t* font) {
     cfont.font     = font ;
@@ -604,6 +603,8 @@ static uint8_t* getFont()      { return cfont.font ; }
 static uint8_t  getFontXsize() { return cfont.x_size ; }
 static uint8_t  getFontYsize() { return cfont.y_size ; }
 
+
+// 32-bit aligned byte array update with dual 16-bit elements
 static inline uint32_t IRAM_ATTR update_pixels(uint32_t px2x_pixels, uint16_t pos0pixel, uint16_t pos1pixel, bool drawPos0, bool drawPos1) {
 	uint32_t* newPixels = &px2x_pixels;
 	uint16_t *pixels16 = (uint16_t*)&newPixels[0];
@@ -617,6 +618,7 @@ static inline uint32_t IRAM_ATTR update_pixels(uint32_t px2x_pixels, uint16_t po
 	return px2x_pixels;
 }
 
+// TODO: Refactor with framebuffer updates... Check 32-bit aligned access to FB etc.
 static inline void IRAM_ATTR plot_pixel_in_fb(uint16_t x, uint16_t y, uint16_t clrid) {
 
 	fb_context_t fbc_display;
@@ -658,7 +660,9 @@ static inline void IRAM_ATTR plot_pixel_in_fb(uint16_t x, uint16_t y, uint16_t c
 }
 
 
-/*  works for 0,0 to 320,240 fillrect..
+// code below will error out if called with anything but 0,0 index pos
+// seems current segmented-framebuffer code can only be called consecutively from idx 0?
+/*
 static inline void IRAM_ATTR plot_pixel_in_fb(uint16_t x, uint16_t y, uint16_t clrid) {
 
 	fb_context_t fbc_display;
@@ -691,62 +695,25 @@ static inline void IRAM_ATTR plot_pixel_in_fb(uint16_t x, uint16_t y, uint16_t c
 }
 */
 
+// basic pixel modification for non-segmented 32-bit framebuffer
+/*
+inline void plot_pixel_32bit(uint32_t* fb, int x, int y, uint16_t clrid)
+{
+
+    uint32_t *dst= &fb[(y*ILI_WIDTH+x)/2];  // Division by 2 due to u16/u32 pointer mismatch!
+    if(x&1)
+        *dst= (*dst& 0xFFFF) | (clrid<<16);    // odd pixel
+    else
+        *dst= (*dst&~0xFFFF) |  clrid;        // even pixel
+}
+*/
+
+
+
 static inline void IRAM_ATTR drawPixelF( uint16_t xpos, uint16_t ypos, uint16_t color )
 {
 
 	plot_pixel_in_fb(xpos,ypos,color);
-	return;
-/*
-  uint32_t* fbl;    // address of current line/row in framebuffer
-  fb_context_t fbc_display;
-  // begin of line/row
-  uint32_t current_pixel_pos = ypos * ILI_WIDTH; // we not so sure here!
-
-  ESP_LOGI(TAG,"CALL framebuffer_pos for %d",current_pixel_pos);
-  fbl = ( uint32_t* )framebuffer_pos( &fbc_display, current_pixel_pos );
-  uint16_t  *frameBuffer = (uint16_t *) fbl;
-  ESP_LOGI(TAG,"GOT framebuffer_pos for %p",frameBuffer);
-  *(frameBuffer+xpos) = color;
-*/
-
-
-	if (xpos > 320) xpos = 0;
-	if (ypos > 240) ypos = 0;
-	uint16_t x = xpos;
-	uint16_t y = ypos;
-	uint16_t clrid = color;
-
-	ESP_LOGI(TAG,"CALL drawPixelF for %d,%d with %d",xpos,ypos,color);
-
-	//plot_pixel_in_fb(xpos,ypos,color);
-	fb_context_t fbc_display;
-		int width = camera_get_fb_width();
-		int height =  camera_get_fb_height();
-
-		int current_byte_pos = 0;
-		int current_pixel_pos = 0;
-		int current_line_pos = 0;
-		int xmod = 0;
-
-		current_pixel_pos = ( y % height ) * width;
-		uint32_t *fbl_i = ( uint32_t* )framebuffer_pos( &fbc_display, current_pixel_pos );
-		if (x % 1) xmod = 1; 	// ie, x = 1... we must wind back to 0
-		current_line_pos = ((x-xmod)) % width ;
-		current_byte_pos = current_line_pos / 2;
-
-		//if (y > 200)
-		if (debugDisplay == 1)
-		ESP_LOGI(TAG,"Access fbl %d at pos for %d for %d,%d",current_pixel_pos,current_byte_pos,x,y);
-
-		uint32_t fbl = fbl_i[current_byte_pos];
-		if (fbl != NULL) {
-			//fbl_i[current_byte_pos] = update_pixels(fbl,clrid,clrid,true,true);
-			if (xmod == 1)
-				fbl_i[current_byte_pos] = update_pixels(fbl,0,clrid,false,true); // mod pixel 1
-			else
-				fbl_i[current_byte_pos] = update_pixels(fbl,clrid,0,true, false); // mod. pixel 0
-		}
-
 
 }
 
@@ -831,17 +798,6 @@ static inline int getStringWidth(char* str)
     }
 }
 
-/*
-inline void plot_pixel_32bit(uint32_t* fb, int x, int y, uint16_t clrid)
-{
-
-    uint32_t *dst= &fb[(y*ILI_WIDTH+x)/2];  // Division by 2 due to u16/u32 pointer mismatch!
-    if(x&1)
-        *dst= (*dst& 0xFFFF) | (clrid<<16);    // odd pixel
-    else
-        *dst= (*dst&~0xFFFF) |  clrid;        // even pixel
-}
-*/
 
 
 /*
@@ -913,102 +869,13 @@ static void fillRect(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_
 
   for (uint16_t i=0; i<h; i++) {
 
-    	  // TODO: DRAWPIXEL REDO THIS GOTTA BE SLOW
+    	  // TODO: DRAWPIXEL REDO THIS GOTTA BE SLOW AS AN ESP32 CAN BE
     	  for (uint16_t z=0; z<w; z++) {
     		plot_pixel_in_fb( x+z, y+i, color);
     	  }
 
   }
 
-/*
-  for (uint16_t i = 0; i < h; i++) {
-	  //
-	    uint32_t* fbl;    // address of current line/row in framebuffer
-
-	    // begin of line/row
-	    for (int j = 0; j < w; j++) {
-	      uint32_t current_pixel_pos = ((i+y) * ILI_WIDTH)+(j+x); // we not so sure here!
-	      fb_context_t fbc_display;
-	      ESP_LOGI(TAG,"FR: CALL framebuffer_pos for %d",current_pixel_pos);
-	      fbl = ( uint32_t* )framebuffer_pos( &fbc_display, current_pixel_pos );
-	      uint16_t  *frameBuffer = (uint16_t *) fbl;
-	      ESP_LOGI(TAG,"FR: GOT framebuffer_pos for %p",frameBuffer);
-	      *(frameBuffer+j) = color;
-	    }
-  }
-*/
-
-
-/*
-  for (uint16_t i = 0; i < h; i++) {
-	  //
-	    uint32_t* fbl;    // address of current line/row in framebuffer
-	    fb_context_t fbc_display;
-	    // begin of line/row
-	    uint32_t current_pixel_pos = (i+y) * ILI_WIDTH; // we not so sure here!
-
-	    ESP_LOGI(TAG,"FR: CALL framebuffer_pos for %d",current_pixel_pos);
-	    fbl = ( uint32_t* )framebuffer_pos( &fbc_display, current_pixel_pos );
-	    ESP_LOGI(TAG,"FR: GOT framebuffer_pos for %p",fbl);
-
-	    int offset = x / 2;
-	    for (int z = 0; z < (w /2); z+=2) {
-	    	  uint32_t longpx = fbl[offset+z];
-
-	    	  if (x % 1) {
-	    		  // odd px
-	    		  fbl[offset+z] = longpx | color ;
-	    	  } else {
-	    		  // even px
-	    		  fbl[offset+z] = longpx | (color << 16) ;
-	    	  }
-	    }
-  }
-*/
-
-	    //uint16_t  *frameBuffer = (uint16_t *) fbl;
-/*
-	    ESP_LOGI(TAG,"FR: GOT framebuffer_pos for %p",frameBuffer);
-	    for (uint16_t j = (x/2); j < (w / 2); j+=2 ) {
-	    									long2px = fbl[current_byte_pos];
-	    		    		    					y1 = unpack(0,long2px);
-	    		    		                    u = unpack(1,long2px);;
-	    		    		                    y2 = unpack(2,long2px);
-	    		    		                    v = unpack(3,long2px);
-	    		if (x % 1) {
-
-	    		} else {
-
-	    		}
-
-
-	    }
-	    //  *(frameBuffer+j) = color
-
-  }
-*/
-  // (x, y) is lower corner.  draw fill lines from top to bottom.
-
-
-/*
-  // (x, y) is lower corner.  draw fill lines from top to bottom.
-  for (int16_t i=0; i<h; i++) {
-
-	  // TODO: DRAWPIXEL REDO THIS GOTTA BE SLOW
-	  for (uint8_t z=0; z<w; z++) {
-	    drawPixelF( x+z, y+i, color);
-	  }
-
-	//drawFastHLine(x, y + i, w, color);
-    //uint32_t pos = fbXY(x, y);
-    //x, y + i
-
-	// uint32_t pixAddr = (y * ILI_WIDTH) + x;
-    // for (uint8_t i=0; i<w; i++) {
-    //  *(frameBuffer+pixAddr) = color;
-    // }
-  }
-  */
 }
 
 // print a ttf based character
@@ -1088,17 +955,15 @@ static void displayHelpScreen( void )
 {
    char msgStr[20];
    char msgStr2[20];
-  //memset( frameBuffer, BLACK, 2 * WIDTH * HEIGHT );         /* Clear screen */
+   //memset( frameBuffer, BLACK, 2 * WIDTH * HEIGHT );         /* Clear screen */
 
-   // TODO: Move to event loop area
+
    fillRect(0,0,320,240,BLACK);
-
 
    static char ip_str[13];
    sprintf(ip_str, IPSTR, IP2STR(&s_ip_addr));
 
    printFont("ESP32 ESPILICAM",10,10,0);
-
    printFont("OV7670-ILI9341",10,10+getFontYsize(),0);
    printFont("command console at:",5,100,0);
    sprintf(msgStr,"telnet %s",ip_str);
@@ -1107,14 +972,12 @@ static void displayHelpScreen( void )
    sprintf(msgStr2,"http://%s/stream",ip_str);
    printFont(msgStr2, 10, 100 + (3*getFontYsize()),0);
 
-
 }
-
 
 static void setupInitialGraphics() {
   //frameBuffer = (uint16_t*)currFbPtr;
   //memset( frameBuffer, BLACK, 2 * WIDTH * HEIGHT );   /* Clear screen */
-
+  fillRect(0,0,320,240,VGA_RED);
   Init_UTFT_GFX_Fonts();
   setFont(&DejaVuSans18);
   int xsize = getFontXsize();
@@ -1131,14 +994,6 @@ static void setupInitialGraphics() {
 #define UNUSED(x) ((void)x)
 #define RESPONSE_BUFFER_LEN 256
 #define CMD_BUFFER_LEN 128
-
-
-
-
-
-
-
-
 
 static sarg_root root;
 static char telnet_cmd_response_buff[RESPONSE_BUFFER_LEN];
@@ -1176,49 +1031,6 @@ static int help_cb(const sarg_result *res)
     return 0;
 }
 
-/*
-static int sys_stats_cb(const sarg_result *res)
-{
-     uint8_t level = 0;
-     size_t free8start=0, free32start=0, free8=0, free32=0, tstk=0;
-     level = res->int_val;
-     uint8_t length = 0;
-     if (level == 0) {
-      free32 = heap_caps_get_largest_free_block( MALLOC_CAP_32BIT );
-      free8 = heap_caps_get_largest_free_block( MALLOC_CAP_8BIT );
-      free8start = heap_caps_get_minimum_free_size( MALLOC_CAP_8BIT );
-      free32start = heap_caps_get_minimum_free_size( MALLOC_CAP_32BIT );
-
-      tstk = uxTaskGetStackHighWaterMark(NULL);
-      length += sprintf(telnet_cmd_response_buff+length,
-        "Stack: %db, free 8-bit=%db, free 32-bit=%db, min 8-bit=%db, min 32-bit=%db.\n",
-        tstk,free8,free32, free8start, free32start);
-     } else {
-
-    	 // call fillRect to test graphics
-
-    	 //if (level == 1) {
-      //vTaskList(telnet_cmd_response_buff);
-      //vTaskGetRunTimeStats(telnet_cmd_response_buff);
-    	   if (level == 1)
-    	    fillRect(0,0,320,240,VGA_BLUE);
-    	   if (level == 2)
-    	    debugDisplay = 1;
-    	   if (level == 3)
-    	     debugDisplay = 0;
-
-
-    	   xSemaphoreGive(dispSem);
-
-
-      length += sprintf(telnet_cmd_response_buff+length, "fillrect called for %dx%d\n",level,level);
-     }
-
-    telnet_esp32_sendData((uint8_t *)telnet_cmd_response_buff, strlen(telnet_cmd_response_buff));
-    return SARG_ERR_SUCCESS;
-}
-*/
-
 static int convertCSVCharArrayToIntArray(char* string,int* output, int maxElements) {
     //const char string[] = "comma separated,input,,,some fields,,empty";
     const char delims[] = ",";
@@ -1247,18 +1059,14 @@ static int convertCSVCharArrayToIntArray(char* string,int* output, int maxElemen
 
 }
 
+// modified version of stats command for debugging
+// this code to be removed if not needed...
 static int sys_stats_cb(const sarg_result *res)
 {
 
-	//if (strcmp("yuv422", res->str_val) == 0) {
-	    //
-
-
      uint8_t level = 0;
      size_t free8start=0, free32start=0, free8=0, free32=0, tstk=0;
-
      uint8_t length = 0;
-
      char *s_args = res->str_val;
 
      #define SSCB_MAX_ARGS 10
@@ -1286,7 +1094,7 @@ static int sys_stats_cb(const sarg_result *res)
     	    	 	 }
     	     }
     	 	 if (els == 2) {
-    	 		 // handle 1,0 - debuggfx on, off
+    	 		 // handle 1,0 - debugdisplay on, off
     	 		 if (argsArray[0] == 1) {
     	 			if (argsArray[1] == 0)
     	 				debugDisplay = false;
@@ -1295,7 +1103,7 @@ static int sys_stats_cb(const sarg_result *res)
     	 		 }
     	 	 }
     	 	 if (els >= 6) {
-    	 		 // handle 2,100,150,4444 for fillRect
+    	 		 // handle 2,100,150,200,200,4444 etc. for fillRect
     	 		 if (argsArray[0] == 2) {
     	 			fillRect(argsArray[1],argsArray[2],argsArray[3],argsArray[4],argsArray[5]);
     	 			xSemaphoreGive(dispSem);
@@ -1922,7 +1730,7 @@ static void http_server_netconn_serve(struct netconn *conn)
             ESP_LOGD( TAG, "Image requested." );
             //ESP_LOGI(TAG, "task stack: %d", uxTaskGetStackHighWaterMark(NULL));
 
-            // debug display will just send the current framebuffer
+            // debug display will just send the current framebuffer, including overlay
             if (!debugDisplay) {
 				bool s_moviemode = is_moviemode_on();
 				set_moviemode( false );
@@ -2155,13 +1963,18 @@ void app_main()
     xSemaphoreGive(dispDoneSem);
     ESP_LOGD(TAG, "Starting ILI9341 display task...");
     xTaskCreatePinnedToCore(&push_framebuffer_to_tft, "push_framebuffer_to_tft", 4096, NULL, 5, NULL,1);
- //   xSemaphoreGive(dispSem);
+
+    // TODO: INITIAL OVERLAY / FLASH SCREEN
+    // CHECK IF SEPERATE TASK IS NEEDED OR
+    // INTEGRATE INTO FB / CAPTURE / TASKS..
+
+    // xSemaphoreGive(dispSem);
     setupInitialGraphics();
- //   displayHelpScreen();
+    xSemaphoreGive(dispSem);
+    displayHelpScreen();
     xSemaphoreGive(dispSem);
     ESP_LOGD(TAG, "Help screen init...");
     vTaskDelay(FLASHSCREEN_TASK_STARTUP_DELAY / portTICK_RATE_MS);
-
 
     captureSem=xSemaphoreCreateBinary();
     captureDoneSem=xSemaphoreCreateBinary();
@@ -2181,7 +1994,7 @@ void app_main()
 
     ESP_LOGD(TAG, "Starting telnetd task...");
     // keep an eye on this - stack free was at 4620 at min with 8048
-    xTaskCreatePinnedToCore(&telnetTask, "telnetTask", 8048, NULL, 5, NULL, 1); //5120, NULL, 5, NULL, 1);
+    xTaskCreatePinnedToCore(&telnetTask, "telnetTask", 5120, NULL, 5, NULL, 1);
 
     ESP_LOGI(TAG, "telnet to \"telnet " IPSTR "\" to access command console, type \"help\" for commands", IP2STR(&s_ip_addr));
 
