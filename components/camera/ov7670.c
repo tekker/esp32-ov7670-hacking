@@ -15,8 +15,9 @@
 #include <stdio.h>
 
 
-static const uint8_t default_regs[][2] = {
-    {COM7, COM7_RESET},
+static const uint8_t default_regs[][2] =
+{
+//   {COM7, COM7_RESET},
 	{TSLB,  0x04},	/* OV */
 	{COM7, 0},	/* VGA */
 	{CLKRC, 0x01},
@@ -125,7 +126,7 @@ static const uint8_t default_regs[][2] = {
 	{0x79, 0x05},		{0xc8, 0x30},
 	{0x79, 0x26},
 
-//  {UNDOC_COLOR_CORRECTION, 0x8C}, // Undocumented color correction, set earlier to 0x84 but test this...
+   {UNDOC_COLOR_CORRECTION, 0x8C}, // Undocumented color correction, set earlier to 0x84 but test this...
 	{0xff, 0xff},	/* END MARKER */
 };
 
@@ -136,7 +137,8 @@ static const uint8_t VGA_regs[][2] = {
 	{SCALING_YSC, 0x35},
 	{SCALING_DCWCTR, 0x11},
 	{SCALING_PCLK_DIV, 0xF0},
-	{SCALING_PCLK_DELAY, 0x02}
+   {SCALING_PCLK_DELAY, 0x02},
+   { 0xff, 0xff },  // END MARKER
 };
 
 static const uint8_t QVGA_regs[][2] = {
@@ -146,7 +148,8 @@ static const uint8_t QVGA_regs[][2] = {
 	{SCALING_YSC, 0x35},
 	{SCALING_DCWCTR, 0x11},
 	{SCALING_PCLK_DIV, 0xF1},
-	{SCALING_PCLK_DELAY, 0x02}
+   {SCALING_PCLK_DELAY, 0x02},
+   { 0xff, 0xff },  // END MARKER
 };
 
 static const uint8_t QQVGA_regs[][2] = {
@@ -156,7 +159,8 @@ static const uint8_t QQVGA_regs[][2] = {
 	{SCALING_YSC, 0x35},
 	{SCALING_DCWCTR, 0x22},
 	{SCALING_PCLK_DIV, 0xF2},
-	{SCALING_PCLK_DELAY, 0x02}
+   {SCALING_PCLK_DELAY, 0x02},
+   { 0xff, 0xff },  // END MARKER
 };
 
 #define NUM_BRIGHTNESS_LEVELS (9)
@@ -728,7 +732,8 @@ static int reset(sensor_t *sensor)
     systick_sleep(10);
 
     // Write default regsiters
-    for (i=0, regs = default_regs; regs[i][0]; i++) {
+   for( i = 0, regs = default_regs; regs[i][0] != 0xFF; i++ )
+   {
         SCCB_Write(sensor->slv_addr, regs[i][0], regs[i][1]);
     }
 
@@ -772,7 +777,7 @@ static int set_pixformat(sensor_t *sensor, pixformat_t pixformat)
 
     // Write back register COM7
     ret = SCCB_Write(sensor->slv_addr, COM7, reg);
-    ret = reg | SCCB_Write(sensor->slv_addr, COM15, reg2);
+   ret |= SCCB_Write( sensor->slv_addr, COM15, reg2 );
 
 
     // Delay
@@ -827,19 +832,19 @@ static int set_framesize(sensor_t *sensor, framesize_t framesize)
 	switch(framesize)
 	{
 		case FRAMESIZE_VGA:
-			for (i=0, regs = VGA_regs; regs[i][0]; i++)
+         for( i = 0, regs = VGA_regs; regs[i][0] != 0xFF; i++ )
 			{
 				ret |= SCCB_Write(sensor->slv_addr, regs[i][0], regs[i][1]);
 			}
 			break;
 		case FRAMESIZE_QVGA:
-			for (i=0, regs = QVGA_regs; regs[i][0]; i++)
+         for( i = 0, regs = QVGA_regs; regs[i][0] != 0xFF; i++ )
 			{
 				ret |= SCCB_Write(sensor->slv_addr, regs[i][0], regs[i][1]);
 			}
 			break;
 		case FRAMESIZE_QQVGA:
-			for (i=0, regs = QQVGA_regs; regs[i][0]; i++)
+         for( i = 0, regs = QQVGA_regs; regs[i][0] != 0xFF; i++ )
 			{
 				ret |= SCCB_Write(sensor->slv_addr, regs[i][0], regs[i][1]);
 			}

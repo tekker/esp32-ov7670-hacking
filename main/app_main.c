@@ -21,17 +21,7 @@
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
 
-// #define ESPIDFV21RC 1
-
-#ifdef ESPIDFV21RC
-  #include "esp_heap_alloc_caps.h"
-#else
-  #include "esp_heap_alloc_caps.h"
   #include "esp_heap_caps.h"
-#endif
-
-
-
 #include "esp_system.h"
 #include "esp_wifi.h"
 #include "esp_event_loop.h"
@@ -48,6 +38,7 @@
 #include "freertos/semphr.h"
 #include "esp_err.h"
 #include "camera.h"
+#include "framebuffer.h"
 
 #include "lwip/sys.h"
 #include "lwip/netdb.h"
@@ -82,11 +73,6 @@ static const char* TAG = "ESPILICAM";
 
 SemaphoreHandle_t dispSem = NULL;
 SemaphoreHandle_t dispDoneSem = NULL;
-
-// TODO: replace display pause logic with task notify...
-static int tft_offset = 0;
-// don't start rendering framebuffer until we have a picture to display..
-static bool PAUSE_DISPLAY=true;
 
 /*
  The ILI9341 needs a bunch of command/argument values to be initialized. They are stored in this struct.
@@ -304,22 +290,18 @@ static uint16_t lcd_delay_ms = 100;
 
 static void captureTask(void *pvParameters) {
 
-  err_t err;
   bool movie_mode = false;
-  xSemaphoreGive(captureDoneSem);
+
   while(1) {
      //frame++;
      movie_mode = is_moviemode_on();
      if (!movie_mode)
      xSemaphoreTake(captureSem, portMAX_DELAY);
 
-     err = camera_run();
+      camera_run();
 
      spi_lcd_send();
      spi_lcd_wait_finish();
-
-     // reorder?
-     vTaskDelay(lcd_delay_ms / portTICK_RATE_MS);
 
      if (!movie_mode)
        xSemaphoreGive(captureDoneSem);
@@ -328,10 +310,17 @@ static void captureTask(void *pvParameters) {
 
 }
 
+static int debugDisplay = 0;
+
 #define ILI_WIDTH 320
 #define ILI_HEIGHT 240
 
 // CAMERA CONFIG
+#ifdef CONFIG_ENABLE_TEST_PATTERN
+  #define ENABLE_TEST_PATTERN 1
+#else
+  #define ENABLE_TEST_PATTERN 0
+#endif
 
 static camera_pixelformat_t s_pixel_format;
 static camera_config_t config = {
@@ -353,13 +342,13 @@ static camera_config_t config = {
     .pin_sscb_scl = CONFIG_SCL,
     .pin_reset = CONFIG_RESET,
     .xclk_freq_hz = CONFIG_XCLK_FREQ,
-    .test_pattern_enabled = CONFIG_ENABLE_TEST_PATTERN,
+    .test_pattern_enabled = ENABLE_TEST_PATTERN,
     };
 
 static camera_model_t camera_model;
 
-//#define CAMERA_PIXEL_FORMAT CAMERA_PF_RGB565
-#define CAMERA_PIXEL_FORMAT CAMERA_PF_YUV422
+#define CAMERA_PIXEL_FORMAT CAMERA_PF_RGB565
+//#define CAMERA_PIXEL_FORMAT CAMERA_PF_YUV422
 #define CAMERA_FRAME_SIZE CAMERA_FS_QVGA
 
 
@@ -407,9 +396,6 @@ static inline uint16_t fast_pascal_to_565(int Y, int U, int V) {
   return ILI9341_color565(r,g,b);
 }
 
-//Warning: This gets squeezed into IRAM.
-volatile static uint32_t *currFbPtr __attribute__ ((aligned(4))) = NULL;
-
 inline uint8_t unpack(int byteNumber, uint32_t value) {
     return (value >> (byteNumber * 8));
 }
@@ -421,63 +407,48 @@ static void push_framebuffer_to_tft(void *pvParameters) {
   int sending_line=-1;
   int calc_line=0;
 
-  uint32_t* fbl = camera_get_fb();
+   uint32_t* fbl;    // address of current line/row in framebuffer
+   fb_context_t fbc_display;
 
   int ili_width = 320;
   int ili_height = 240;
   int width = camera_get_fb_width();
   int height =  camera_get_fb_height();
-  int max_fb_pos = width * height;
   uint16_t pixel565 = 0;
   uint16_t pixel565_2 = 0;
-  int current_byte_pos = 0, current_fb_pixel_pos = 0;
-
-  xSemaphoreGive(dispDoneSem);
+   int current_byte_pos = 0;
+   int current_pixel_pos = 0;
+   int current_line_pos = 0;
 
   while(1) {
-     //frame++;
      xSemaphoreTake(dispSem, portMAX_DELAY);
- //		printf("Display task: frame.\n");
-     bool reset_loop = false;
+
      for (y=0; y<ili_height; y++) {
+         // begin of line/row
+         current_pixel_pos = ( y % height ) * width;
+
+         //ESP_LOGI(TAG,"FBTFT framebuffer_pos  for %d",current_pixel_pos);
+
+         fbl = ( uint32_t* )framebuffer_pos( &fbc_display, current_pixel_pos );
+
         //Calculate a line, operate on 2 pixels at a time...
         for (x=0; x<ili_width; x+=2) {
-
-            // TODO: display pause logic cleanup
-/*
-            if (PAUSE_DISPLAY) {
-              while (PAUSE_DISPLAY) { vTaskDelay(30 / portTICK_RATE_MS); }
-              // reset FB, cam may have re-init'ed
-              fbl = camera_get_fb();
-              reset_loop = true;
-            }
-            if (reset_loop) break;
-*/
-
             // wrap pixels around...
-            current_fb_pixel_pos = ((y*width)+x+tft_offset) % max_fb_pos;
-            // note, the next line is done to enable shifting the offset
-            // TODO: remove test mod %
-            current_byte_pos = current_fb_pixel_pos/2+(tft_offset % 4);
+            current_line_pos = x % width ;
+            current_byte_pos = current_line_pos / 2;
 
             if (fbl != NULL) {
               if (s_pixel_format == CAMERA_PF_YUV422) {
                 uint32_t long2px = 0;
                 uint8_t y1, y2, u, v;
 
+           //     ESP_LOGI(TAG,"Access fb for %d",current_byte_pos);
+
                 long2px = fbl[current_byte_pos];
                 y1 = unpack(0,long2px);
-                v = unpack(1,long2px);;
+                u = unpack(1,long2px);;
                 y2 = unpack(2,long2px);
-                u = unpack(3,long2px);
-
-                // UYVY (Reverse order)
-                /*
-                y1 = fb[current_byte_pos+3];
-                v = fb[current_byte_pos+2];
-                y2 = fb[current_byte_pos+1];
-                u = fb[current_byte_pos];
-                */
+                v = unpack(3,long2px);
 
                 pixel565 = fast_yuv_to_rgb565(y1,u,v);
                 pixel565_2 = fast_yuv_to_rgb565(y2,u,v);
@@ -488,18 +459,14 @@ static void push_framebuffer_to_tft(void *pvParameters) {
                 // rgb565 direct from OV7670 to ILI9341
                 // best to swap bytes here instead of bswap
                 uint32_t long2px = 0;
-                uint8_t y1, y2, u, v;
+                //ESP_LOGI(TAG,"Access fb for %d",current_byte_pos);
 
                 long2px = fbl[current_byte_pos];
-                pixel565 =  (unpack(3,long2px) << 8) | unpack(2,long2px);
-                pixel565_2 = (unpack(1,long2px) << 8) | unpack(0,long2px);
+                  pixel565   = ( unpack( 0, long2px ) << 8 ) | unpack( 1, long2px );
+                  pixel565_2 = ( unpack( 2, long2px ) << 8 ) | unpack( 3, long2px );
 
-                /*
-                pixel565 =  (fb[current_byte_pos] << 8) |  fb[current_byte_pos+1]; //(fb[currBytePos] & 0xFF00 >> 8) | (p565 = fb[currBytePos+1] & 0x00FF);
-                pixel565_2 = (fb[current_byte_pos+2] << 8) |  fb[current_byte_pos+3];
-                */
-                line[calc_line][x]= pixel565;
-                line[calc_line][x+1]= pixel565_2;
+                  line[calc_line][x]     = __bswap_16( pixel565 );
+                  line[calc_line][x + 1] = __bswap_16( pixel565_2 );
               }
             }
         }
@@ -515,12 +482,28 @@ static void push_framebuffer_to_tft(void *pvParameters) {
         //touch line[sending_line]; the SPI sending process is still reading from that.
       } // end for (y=0; y<ili_height; y++)
 
-      // TODO: check that line is actually sent before giving semaphore!
-      vTaskDelay(10 / portTICK_RATE_MS);
+      // check that line is actually sent before giving semaphore!
+      if( sending_line != -1 ) send_line_finish( spi );
+      sending_line = -1;
 
       xSemaphoreGive(dispDoneSem);
   } // end while(1)
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 // camera code
 
@@ -542,12 +525,620 @@ const int CONNECTED_BIT = BIT0;
 static ip4_addr_t s_ip_addr;
 
 
+// graphics code
+
+#include "DejaVuSans18.h"
+
+// VGA color palette
+#define VGA_BLACK       0x0000
+#define VGA_WHITE       0xFFFF
+#define VGA_RED         0xF800
+#define VGA_GREEN       0x0400
+#define VGA_BLUE        0x001F
+#define VGA_SILVER      0xC618
+#define VGA_GRAY        0x8410
+#define VGA_MAROON      0x8000
+#define VGA_YELLOW      0xFFE0
+#define VGA_OLIVE       0x8400
+#define VGA_LIME        0x07E0
+#define VGA_AQUA        0x07FF
+#define VGA_TEAL        0x0410
+#define VGA_NAVY        0x0010
+#define VGA_FUCHSIA     0xF81F
+#define VGA_PURPLE      0x8010
+#define VGA_TRANSPARENT 0xFFFFFFFF
+
+#define BLACK           0x0000
+#define WHITE           0xFFFF
+
+uint16_t      textcolor, textbgcolor ;
+bool _transparent = true;
+
+// FRAMEBUFFER reference...
+static uint16_t                 *frameBuffer;
+
+
+typedef struct propFont
+{
+        uint8_t charCode;
+        uint16_t adjYOffset;
+        uint16_t width;
+        uint16_t height;
+        uint16_t xOffset;
+        uint16_t xDelta;
+        uint8_t* dataPtr;
+} _propFont;
+
+
+typedef struct current_font {
+    uint8_t* font ;
+    uint8_t  x_size ;
+    uint8_t  y_size ;
+    uint8_t  offset ;
+    uint8_t  numchars ;
+} _current_font ;
+
+_current_font cfont ;
+
+static void Init_UTFT_GFX_Fonts() {
+
+    cfont.font     = NULL ;
+    cfont.x_size   = 0 ;
+    cfont.y_size   = 0 ;
+    cfont.offset   = 0 ;
+    cfont.numchars = 0 ;
+    textcolor      = VGA_WHITE;
+    textbgcolor    = VGA_BLACK;
+}
+
+
+static void setFont(uint8_t* font) {
+    cfont.font     = font ;
+    cfont.x_size   = cfont.font[0] ;
+    cfont.y_size   = cfont.font[1] ;
+    cfont.offset   = cfont.font[2] ;
+    cfont.numchars = cfont.font[3];
+}
+
+static uint8_t* getFont()      { return cfont.font ; }
+static uint8_t  getFontXsize() { return cfont.x_size ; }
+static uint8_t  getFontYsize() { return cfont.y_size ; }
+
+static inline uint32_t IRAM_ATTR update_pixels(uint32_t px2x_pixels, uint16_t pos0pixel, uint16_t pos1pixel, bool drawPos0, bool drawPos1) {
+	uint32_t* newPixels = &px2x_pixels;
+	uint16_t *pixels16 = (uint16_t*)&newPixels[0];
+
+	if (drawPos0) {
+		pixels16[0] = pos0pixel;
+	}
+	if (drawPos1) {
+		pixels16[1] = pos1pixel;
+	}
+	return px2x_pixels;
+}
+
+static inline void IRAM_ATTR plot_pixel_in_fb(uint16_t x, uint16_t y, uint16_t clrid) {
+
+	fb_context_t fbc_display;
+	int width = camera_get_fb_width();
+	int height =  camera_get_fb_height();
+
+	int current_byte_pos = 0;
+	int current_pixel_pos = 0;
+	int current_line_pos = 0;
+	int xmod = 0;
+
+	current_pixel_pos = ( y % height ) * width;
+
+	if (debugDisplay == 1)
+		ESP_LOGI(TAG,"Call  framebuffer_pos %d for %d,%d",current_pixel_pos,x,y);
+
+	uint32_t *fbl_i = NULL;
+	for (int z = 0; z <= current_pixel_pos; z = z + width)  {
+		if (debugDisplay == 1)
+		  ESP_LOGI(TAG,"Scanning  framebuffer_pos (%d - %d)",z,current_pixel_pos);
+	    fbl_i = ( uint32_t* )framebuffer_pos( &fbc_display, z );
+	}
+	if (x % 1) xmod = 1; 	// ie, x = 1... we must wind back to 0
+	current_line_pos = ((x-xmod)) % width ;
+	current_byte_pos = current_line_pos / 2;
+
+	//if (y > 200)
+	if (debugDisplay == 1)
+	ESP_LOGI(TAG,"Access fbl %d at pos for %d for %d,%d",current_pixel_pos,current_byte_pos,x,y);
+
+	uint32_t fbl = fbl_i[current_byte_pos];
+	if (fbl != NULL) {
+		//fbl_i[current_byte_pos] = update_pixels(fbl,clrid,clrid,true,true);
+		if (xmod == 1)
+			fbl_i[current_byte_pos] = update_pixels(fbl,0,clrid,false,true); // mod pixel 1
+		else
+			fbl_i[current_byte_pos] = update_pixels(fbl,clrid,0,true, false); // mod. pixel 0
+	}
+}
+
+
+/*  works for 0,0 to 320,240 fillrect..
+static inline void IRAM_ATTR plot_pixel_in_fb(uint16_t x, uint16_t y, uint16_t clrid) {
+
+	fb_context_t fbc_display;
+	int width = camera_get_fb_width();
+	int height =  camera_get_fb_height();
+
+	int current_byte_pos = 0;
+	int current_pixel_pos = 0;
+	int current_line_pos = 0;
+	int xmod = 0;
+
+	current_pixel_pos = ( y % height ) * width;
+	uint32_t *fbl_i = ( uint32_t* )framebuffer_pos( &fbc_display, current_pixel_pos );
+	if (x % 1) xmod = 1; 	// ie, x = 1... we must wind back to 0
+	current_line_pos = ((x-xmod)) % width ;
+	current_byte_pos = current_line_pos / 2;
+
+	//if (y > 200)
+	if (debugDisplay == 1)
+	ESP_LOGI(TAG,"Access fbl %d at pos for %d for %d,%d",current_pixel_pos,current_byte_pos,x,y);
+
+	uint32_t fbl = fbl_i[current_byte_pos];
+	if (fbl != NULL) {
+		//fbl_i[current_byte_pos] = update_pixels(fbl,clrid,clrid,true,true);
+		if (xmod == 1)
+			fbl_i[current_byte_pos] = update_pixels(fbl,0,clrid,false,true); // mod pixel 1
+		else
+			fbl_i[current_byte_pos] = update_pixels(fbl,clrid,0,true, false); // mod. pixel 0
+	}
+}
+*/
+
+static inline void IRAM_ATTR drawPixelF( uint16_t xpos, uint16_t ypos, uint16_t color )
+{
+
+	plot_pixel_in_fb(xpos,ypos,color);
+	return;
+/*
+  uint32_t* fbl;    // address of current line/row in framebuffer
+  fb_context_t fbc_display;
+  // begin of line/row
+  uint32_t current_pixel_pos = ypos * ILI_WIDTH; // we not so sure here!
+
+  ESP_LOGI(TAG,"CALL framebuffer_pos for %d",current_pixel_pos);
+  fbl = ( uint32_t* )framebuffer_pos( &fbc_display, current_pixel_pos );
+  uint16_t  *frameBuffer = (uint16_t *) fbl;
+  ESP_LOGI(TAG,"GOT framebuffer_pos for %p",frameBuffer);
+  *(frameBuffer+xpos) = color;
+*/
+
+
+	if (xpos > 320) xpos = 0;
+	if (ypos > 240) ypos = 0;
+	uint16_t x = xpos;
+	uint16_t y = ypos;
+	uint16_t clrid = color;
+
+	ESP_LOGI(TAG,"CALL drawPixelF for %d,%d with %d",xpos,ypos,color);
+
+	//plot_pixel_in_fb(xpos,ypos,color);
+	fb_context_t fbc_display;
+		int width = camera_get_fb_width();
+		int height =  camera_get_fb_height();
+
+		int current_byte_pos = 0;
+		int current_pixel_pos = 0;
+		int current_line_pos = 0;
+		int xmod = 0;
+
+		current_pixel_pos = ( y % height ) * width;
+		uint32_t *fbl_i = ( uint32_t* )framebuffer_pos( &fbc_display, current_pixel_pos );
+		if (x % 1) xmod = 1; 	// ie, x = 1... we must wind back to 0
+		current_line_pos = ((x-xmod)) % width ;
+		current_byte_pos = current_line_pos / 2;
+
+		//if (y > 200)
+		if (debugDisplay == 1)
+		ESP_LOGI(TAG,"Access fbl %d at pos for %d for %d,%d",current_pixel_pos,current_byte_pos,x,y);
+
+		uint32_t fbl = fbl_i[current_byte_pos];
+		if (fbl != NULL) {
+			//fbl_i[current_byte_pos] = update_pixels(fbl,clrid,clrid,true,true);
+			if (xmod == 1)
+				fbl_i[current_byte_pos] = update_pixels(fbl,0,clrid,false,true); // mod pixel 1
+			else
+				fbl_i[current_byte_pos] = update_pixels(fbl,clrid,0,true, false); // mod. pixel 0
+		}
+
+
+}
+
+static inline void IRAM_ATTR printFontChar(uint8_t c, int16_t x, int16_t y) {
+    if (cfont.font == NULL) return ;
+
+    uint16_t start = ((c - cfont.offset) * ((cfont.x_size / 8) * cfont.y_size)) + 4 ;
+    bool     drawBG = (textbgcolor != textcolor) ;
+    uint8_t  j, zz, ch, i ;
+
+    for (j = 0 ; j < cfont.y_size ; j++) {
+        for (zz = 0 ; zz < (cfont.x_size / 8) ; zz++) {
+            ch = cfont.font[start + zz] ;
+            for (i = 0 ; i < 8 ; i++) {
+                if ((ch & (1 << (7 - i))) != 0) {
+                    drawPixelF(x + i + (zz * 8), y + j, textcolor) ;
+
+                } else if (drawBG) {
+                    drawPixelF(x + i + (zz * 8), y + j, textbgcolor) ;
+                }
+            }
+        }
+        start += (cfont.x_size / 8) ;
+    }
+}
+
+//  Glyph data for an individual character in the ttf font
+static inline bool getCharPtr(uint8_t c, _propFont* fontChar)
+{
+    // propFont data is stored as cFont.font data with 0 width...
+    uint8_t* tempPtr = cfont.font + 4; // point at data
+    do
+    {
+        fontChar->charCode = *tempPtr++;
+        fontChar->adjYOffset = *tempPtr++;
+        fontChar->width = *tempPtr++;
+        fontChar->height = *tempPtr++;
+        fontChar->xOffset = *tempPtr++;
+        fontChar->xOffset = fontChar->xOffset < 0x80 ? fontChar->xOffset : (0x100 - fontChar->xOffset);
+        fontChar->xDelta = *tempPtr++;
+        if (c != fontChar->charCode && fontChar->charCode != 0xFF)
+        {
+            if (fontChar->width != 0)
+            {
+                // packed bits
+                tempPtr += (((fontChar->width * fontChar->height)-1) / 8) + 1;
+            }
+        }
+    } while (c != fontChar->charCode && fontChar->charCode != 0xFF);
+
+    fontChar->dataPtr = tempPtr;
+    return (fontChar->charCode != 0xFF);
+}
+
+
+// returns the string width in pixels. Useful for positions strings on the screen.
+static inline int getStringWidth(char* str)
+{
+    char* tempStrptr = str;
+
+    // is it a fixed width font?
+    if (cfont.x_size != 0)
+    {
+        return (strlen(str) * cfont.x_size);
+    }
+    else
+    {
+        // calculate the string width
+        int strWidth = 0;
+        while (*str != 0)
+        {
+            _propFont fontChar;
+            bool found = getCharPtr(*str, &fontChar);
+            if (found && *str == fontChar.charCode)
+            {
+                strWidth += fontChar.xDelta + 1;
+            }
+            str++;
+        }
+
+        return strWidth;
+    }
+}
+
+/*
+inline void plot_pixel_32bit(uint32_t* fb, int x, int y, uint16_t clrid)
+{
+
+    uint32_t *dst= &fb[(y*ILI_WIDTH+x)/2];  // Division by 2 due to u16/u32 pointer mismatch!
+    if(x&1)
+        *dst= (*dst& 0xFFFF) | (clrid<<16);    // odd pixel
+    else
+        *dst= (*dst&~0xFFFF) |  clrid;        // even pixel
+}
+*/
+
+
+/*
+void plot_pixel_in_fb(uint16_t x, uint16_t y, uint16_t clrid) {
+
+	fb_context_t fbc_display;
+	int width = camera_get_fb_width();
+	int height =  camera_get_fb_height();
+
+	int current_byte_pos = 0;
+	int current_pixel_pos = 0;
+	int current_line_pos = 0;
+	int xmod = 0;
+
+	current_pixel_pos = ( y % height ) * width;
+	//ESP_LOGI(TAG,"CALL framebuffer_pos  for %d",current_pixel_pos);
+	uint32_t *fbl_i = ( uint32_t* )framebuffer_pos( &fbc_display, current_pixel_pos );
+	// start of fb segment / address
+	//ESP_LOGI(TAG,"Got fb at %p",fbl_i);
+
+	if (x % 1) xmod = 1; 	// ie, x = 1... we must wind back to 0
+			   	   	   	   // x = 5, we need to access pixel 4
+
+	current_line_pos = ((x-xmod)) % width ;
+	current_byte_pos = current_line_pos / 2;
+
+	ESP_LOGI(TAG,"Access fbl %d at pos for %d for %d,%d",current_pixel_pos,current_byte_pos,x,y);
+
+	uint32_t fbl = fbl_i[current_byte_pos];
+	if (fbl != NULL) {
+				if (xmod == 1)
+			        // *fbl= (*fbl & 0xFFFF) | (clrid<<16);    // odd pixel
+					fbl_i[current_byte_pos] = (fbl & 0xFFFF) | (clrid<<16);
+			    else
+			    	    fbl_i[current_byte_pos] = (fbl &~0xFFFF) |  clrid;
+			        // *fbl= (*fbl &~0xFFFF) |  clrid;        // even pixel
+	}
+
+}
+*/
+
+
+/*
+{
+	uint32_t *fbl = ( uint32_t* )framebuffer_pos( &fbc_display, current_pixel_pos );
+	if(x&1)
+	        *fbl= (*fbl& 0xFFFF) | (clrid<<16);    // odd pixel
+	    else
+	        *fbl= (*fbl&~0xFFFF) |  clrid;        // even pixel
+
+}
+*/
+
+static void fillRect(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t color) {
+  uint16_t w = x1 - x0;
+  uint16_t h = y1 - y0;
+  uint16_t x = x0;
+  uint16_t y = y0;
+  if (x0 > x1) {
+    x = x1;
+    w = -w;
+  }
+  if (y0 > y1) {
+    y = y1;
+    h = -h;
+  }
+
+  ESP_LOGI(TAG,"fillrect for %d,%d,%d,%d",x,y,w,h);
+
+  for (uint16_t i=0; i<h; i++) {
+
+    	  // TODO: DRAWPIXEL REDO THIS GOTTA BE SLOW
+    	  for (uint16_t z=0; z<w; z++) {
+    		plot_pixel_in_fb( x+z, y+i, color);
+    	  }
+
+  }
+
+/*
+  for (uint16_t i = 0; i < h; i++) {
+	  //
+	    uint32_t* fbl;    // address of current line/row in framebuffer
+
+	    // begin of line/row
+	    for (int j = 0; j < w; j++) {
+	      uint32_t current_pixel_pos = ((i+y) * ILI_WIDTH)+(j+x); // we not so sure here!
+	      fb_context_t fbc_display;
+	      ESP_LOGI(TAG,"FR: CALL framebuffer_pos for %d",current_pixel_pos);
+	      fbl = ( uint32_t* )framebuffer_pos( &fbc_display, current_pixel_pos );
+	      uint16_t  *frameBuffer = (uint16_t *) fbl;
+	      ESP_LOGI(TAG,"FR: GOT framebuffer_pos for %p",frameBuffer);
+	      *(frameBuffer+j) = color;
+	    }
+  }
+*/
+
+
+/*
+  for (uint16_t i = 0; i < h; i++) {
+	  //
+	    uint32_t* fbl;    // address of current line/row in framebuffer
+	    fb_context_t fbc_display;
+	    // begin of line/row
+	    uint32_t current_pixel_pos = (i+y) * ILI_WIDTH; // we not so sure here!
+
+	    ESP_LOGI(TAG,"FR: CALL framebuffer_pos for %d",current_pixel_pos);
+	    fbl = ( uint32_t* )framebuffer_pos( &fbc_display, current_pixel_pos );
+	    ESP_LOGI(TAG,"FR: GOT framebuffer_pos for %p",fbl);
+
+	    int offset = x / 2;
+	    for (int z = 0; z < (w /2); z+=2) {
+	    	  uint32_t longpx = fbl[offset+z];
+
+	    	  if (x % 1) {
+	    		  // odd px
+	    		  fbl[offset+z] = longpx | color ;
+	    	  } else {
+	    		  // even px
+	    		  fbl[offset+z] = longpx | (color << 16) ;
+	    	  }
+	    }
+  }
+*/
+
+	    //uint16_t  *frameBuffer = (uint16_t *) fbl;
+/*
+	    ESP_LOGI(TAG,"FR: GOT framebuffer_pos for %p",frameBuffer);
+	    for (uint16_t j = (x/2); j < (w / 2); j+=2 ) {
+	    									long2px = fbl[current_byte_pos];
+	    		    		    					y1 = unpack(0,long2px);
+	    		    		                    u = unpack(1,long2px);;
+	    		    		                    y2 = unpack(2,long2px);
+	    		    		                    v = unpack(3,long2px);
+	    		if (x % 1) {
+
+	    		} else {
+
+	    		}
+
+
+	    }
+	    //  *(frameBuffer+j) = color
+
+  }
+*/
+  // (x, y) is lower corner.  draw fill lines from top to bottom.
+
+
+/*
+  // (x, y) is lower corner.  draw fill lines from top to bottom.
+  for (int16_t i=0; i<h; i++) {
+
+	  // TODO: DRAWPIXEL REDO THIS GOTTA BE SLOW
+	  for (uint8_t z=0; z<w; z++) {
+	    drawPixelF( x+z, y+i, color);
+	  }
+
+	//drawFastHLine(x, y + i, w, color);
+    //uint32_t pos = fbXY(x, y);
+    //x, y + i
+
+	// uint32_t pixAddr = (y * ILI_WIDTH) + x;
+    // for (uint8_t i=0; i<w; i++) {
+    //  *(frameBuffer+pixAddr) = color;
+    // }
+  }
+  */
+}
+
+// print a ttf based character
+static inline int printProportionalChar(uint8_t c, int x, int y)
+{
+    uint8_t i=0,j=0,ch=0;
+    uint16_t temp;
+    uint8_t *tempPtr;
+
+    _propFont fontChar;
+    if (!getCharPtr(c, &fontChar))
+    {
+        return 0;
+    }
+
+    // fill background
+    //uint16_t fcolor = textcolor; //getColor();
+    if (!_transparent)
+    {
+        int fontHeight = cfont.y_size; //getFontHeight();
+        fillRect(x, y, x + fontChar.xDelta+1, y + fontHeight,textbgcolor);
+    }
+
+    tempPtr = fontChar.dataPtr;
+    if (fontChar.width != 0)
+    {
+          uint8_t mask = 0x80;
+          for (j=0; j < fontChar.height; j++)
+          {
+             //ch=pgm_read_uint8_t(tempPtr++);
+             for (i=0; i < fontChar.width; i++)
+             {
+                if (((i + (j*fontChar.width)) % 8) == 0)
+                {
+                    mask = 0x80;
+                    ch = *tempPtr++;
+                }
+                if ((ch & mask) !=0)
+                {
+                    drawPixelF(x+fontChar.xOffset+i,y+j+fontChar.adjYOffset,textcolor);
+                }
+                else
+                {
+                    //setPixel(bcolorr, bcolorg, bcolorb);
+                }
+                mask >>= 1;
+             }
+          }
+    }
+    return fontChar.xDelta;
+}
+
+static inline void printFont(char* st, int16_t x, int16_t y, int16_t deg) {
+    int16_t stl = strlen(st) ;
+
+    // handle wrapping over the left or bottom...
+
+    for (int16_t i = 0 ; i < stl ; i++) {
+        if (deg == 0) {
+                    if (cfont.x_size == 0)
+                    {
+                        // each char has individual width
+                        x += printProportionalChar(*st++, x, y)+1;
+                    }
+                    else
+                    {
+                        printFontChar(*st++, x + (i * cfont.x_size), y);
+                    }
+        } else {
+            // unsupported at present
+            //rotateChar(*st++, x, y, i, deg) ;
+        }
+    }
+}
+
+static void displayHelpScreen( void )
+{
+   char msgStr[20];
+   char msgStr2[20];
+  //memset( frameBuffer, BLACK, 2 * WIDTH * HEIGHT );         /* Clear screen */
+
+   // TODO: Move to event loop area
+   fillRect(0,0,320,240,BLACK);
+
+
+   static char ip_str[13];
+   sprintf(ip_str, IPSTR, IP2STR(&s_ip_addr));
+
+   printFont("ESP32 ESPILICAM",10,10,0);
+
+   printFont("OV7670-ILI9341",10,10+getFontYsize(),0);
+   printFont("command console at:",5,100,0);
+   sprintf(msgStr,"telnet %s",ip_str);
+   printFont(msgStr,50, 100 + getFontYsize(),0);
+   printFont("or stream at:",50, 100 + (2*getFontYsize()), 0);
+   sprintf(msgStr2,"http://%s/stream",ip_str);
+   printFont(msgStr2, 10, 100 + (3*getFontYsize()),0);
+
+
+}
+
+
+static void setupInitialGraphics() {
+  //frameBuffer = (uint16_t*)currFbPtr;
+  //memset( frameBuffer, BLACK, 2 * WIDTH * HEIGHT );   /* Clear screen */
+
+  Init_UTFT_GFX_Fonts();
+  setFont(&DejaVuSans18);
+  int xsize = getFontXsize();
+  ESP_LOGI(TAG, "GFX Initialized: Font xsize: %d", xsize);
+
+}
+
+
+
+
 // command parser...
 #include "smallargs.h"
 
 #define UNUSED(x) ((void)x)
 #define RESPONSE_BUFFER_LEN 256
 #define CMD_BUFFER_LEN 128
+
+
+
+
+
+
+
+
 
 static sarg_root root;
 static char telnet_cmd_response_buff[RESPONSE_BUFFER_LEN];
@@ -556,7 +1147,6 @@ static char telnet_cmd_buffer[CMD_BUFFER_LEN];
 static void handle_camera_config_chg(bool reinit_reqd) {
   if (reinit_reqd) {
               ESP_LOGD(TAG, "Reconfiguring camera...");
-              PAUSE_DISPLAY = true;
               esp_err_t err;
               vTaskDelay(100 / portTICK_RATE_MS);
               err = reset_pixformat();
@@ -568,7 +1158,6 @@ static void handle_camera_config_chg(bool reinit_reqd) {
               }
               return;
               vTaskDelay(100 / portTICK_RATE_MS);
-              PAUSE_DISPLAY = false;
     }
 }
 
@@ -582,36 +1171,12 @@ static int help_cb(const sarg_result *res)
     ret = sarg_help_text(&root, &buf);
     if(ret != SARG_ERR_SUCCESS)
         return ret;
-//    we can't spare much memory!!
-//    int length = 0;
-//    length += sprintf(telnet_cmd_response_buff+length, "%s\n", buf);
-//    ESP_LOGD(TAG," help_cb: %s",telnet_cmd_response_buff);
-//    telnet_esp32_sendData((uint8_t *)telnet_cmd_response_buff, strlen(telnet_cmd_response_buff));
     telnet_esp32_sendData((uint8_t *)buf, strlen(buf));
     free(buf);
     return 0;
 }
 
-
 /*
-
-void captureTask( void * pvParameters ) {
-    while(1) {
-     while (movie_mode) {
-      PAUSE_DISPLAY = true;
-      camera_run();
-      PAUSE_DISPLAY = false;
-      spi_lcd_send();
-      spi_lcd_wait_finish();
-      vTaskDelay(30 / portTICK_RATE_MS);
-     }
-     vTaskDelay(10 / portTICK_RATE_MS);
-   }
-   vTaskDelete(NULL);
-}
-*/
-
-
 static int sys_stats_cb(const sarg_result *res)
 {
      uint8_t level = 0;
@@ -619,32 +1184,129 @@ static int sys_stats_cb(const sarg_result *res)
      level = res->int_val;
      uint8_t length = 0;
      if (level == 0) {
-
-       #ifdef ESPIDFV21RC
-           free8=xPortGetFreeHeapSizeCaps(MALLOC_CAP_8BIT);
-           free32=xPortGetFreeHeapSizeCaps(MALLOC_CAP_32BIT);
-           free8start=xPortGetMinimumEverFreeHeapSizeCaps(MALLOC_CAP_8BIT);
-           free32start=xPortGetMinimumEverFreeHeapSizeCaps(MALLOC_CAP_32BIT);
-       #else
-           free32=heap_caps_get_largest_free_block(MALLOC_CAP_32BIT);
-           free8=heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
-           free8start=heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT);
-           free32start=heap_caps_get_minimum_free_size(MALLOC_CAP_32BIT);
-       #endif
+      free32 = heap_caps_get_largest_free_block( MALLOC_CAP_32BIT );
+      free8 = heap_caps_get_largest_free_block( MALLOC_CAP_8BIT );
+      free8start = heap_caps_get_minimum_free_size( MALLOC_CAP_8BIT );
+      free32start = heap_caps_get_minimum_free_size( MALLOC_CAP_32BIT );
 
       tstk = uxTaskGetStackHighWaterMark(NULL);
       length += sprintf(telnet_cmd_response_buff+length,
         "Stack: %db, free 8-bit=%db, free 32-bit=%db, min 8-bit=%db, min 32-bit=%db.\n",
         tstk,free8,free32, free8start, free32start);
-     } else if (level == 1) {
+     } else {
+
+    	 // call fillRect to test graphics
+
+    	 //if (level == 1) {
       //vTaskList(telnet_cmd_response_buff);
       //vTaskGetRunTimeStats(telnet_cmd_response_buff);
-      length += sprintf(telnet_cmd_response_buff+length, "not implemented\n");
+    	   if (level == 1)
+    	    fillRect(0,0,320,240,VGA_BLUE);
+    	   if (level == 2)
+    	    debugDisplay = 1;
+    	   if (level == 3)
+    	     debugDisplay = 0;
+
+
+    	   xSemaphoreGive(dispSem);
+
+
+      length += sprintf(telnet_cmd_response_buff+length, "fillrect called for %dx%d\n",level,level);
      }
 
     telnet_esp32_sendData((uint8_t *)telnet_cmd_response_buff, strlen(telnet_cmd_response_buff));
     return SARG_ERR_SUCCESS;
 }
+*/
+
+static int convertCSVCharArrayToIntArray(char* string,int* output, int maxElements) {
+    //const char string[] = "comma separated,input,,,some fields,,empty";
+    const char delims[] = ",";
+    int elementCnt = 0;
+    int n = 0;
+
+    // const char *s = string;
+    // if we don't want to eat the string and dont want to malloc we can use this monstrosity
+    #define BUF_CHARS_TMP 50
+    static char tmpStr[BUF_CHARS_TMP];
+    strncpy(tmpStr,string,BUF_CHARS_TMP);
+    tmpStr[sizeof(tmpStr)-1] = 0;
+    const char *s = &tmpStr[0];
+
+    do {
+        if (elementCnt >= maxElements) break;
+        size_t field_len = strcspn(s, delims);
+        //printf("\"%.*s\" - %d\n", (int)field_len, s, (int)field_len);
+        if (field_len > 0) {
+            n = atoi(s);
+            output[elementCnt++] = n;
+        }
+        s += field_len;
+    } while (*s++);
+    return elementCnt;
+
+}
+
+static int sys_stats_cb(const sarg_result *res)
+{
+
+	//if (strcmp("yuv422", res->str_val) == 0) {
+	    //
+
+
+     uint8_t level = 0;
+     size_t free8start=0, free32start=0, free8=0, free32=0, tstk=0;
+
+     uint8_t length = 0;
+
+     char *s_args = res->str_val;
+
+     #define SSCB_MAX_ARGS 10
+     int argsArray[SSCB_MAX_ARGS];
+     int els = convertCSVCharArrayToIntArray(s_args,argsArray,SSCB_MAX_ARGS);
+     if (els > 0) {
+
+    	     if (els == 1) {
+    	    	 	 if (argsArray[0] == 0) {
+
+    	    	 		 	 free32 = heap_caps_get_largest_free_block( MALLOC_CAP_32BIT );
+    	    	 		      free8 = heap_caps_get_largest_free_block( MALLOC_CAP_8BIT );
+    	    	 		      free8start = heap_caps_get_minimum_free_size( MALLOC_CAP_8BIT );
+    	    	 		      free32start = heap_caps_get_minimum_free_size( MALLOC_CAP_32BIT );
+
+    	    	 		      tstk = uxTaskGetStackHighWaterMark(NULL);
+    	    	 		      length += sprintf(telnet_cmd_response_buff+length,
+    	    	 		        "Stack: %db, free 8-bit=%db, free 32-bit=%db, min 8-bit=%db, min 32-bit=%db.\n",
+    	    	 		        tstk,free8,free32, free8start, free32start);
+
+    	    	 	 }
+    	    	 	 if (argsArray[0] == 1) {
+    	    	     	 displayHelpScreen();
+    	    	     	 xSemaphoreGive(dispSem);
+    	    	 	 }
+    	     }
+    	 	 if (els == 2) {
+    	 		 // handle 1,0 - debuggfx on, off
+    	 		 if (argsArray[0] == 1) {
+    	 			if (argsArray[1] == 0)
+    	 				debugDisplay = false;
+    	 			else
+    	 				debugDisplay = true;
+    	 		 }
+    	 	 }
+    	 	 if (els >= 6) {
+    	 		 // handle 2,100,150,4444 for fillRect
+    	 		 if (argsArray[0] == 2) {
+    	 			fillRect(argsArray[1],argsArray[2],argsArray[3],argsArray[4],argsArray[5]);
+    	 			xSemaphoreGive(dispSem);
+    	 		 }
+    	 	 }
+      length += sprintf(telnet_cmd_response_buff+length, "fillrect called for %dx%d\n",level,level);
+    }
+    telnet_esp32_sendData((uint8_t *)telnet_cmd_response_buff, strlen(telnet_cmd_response_buff));
+    return SARG_ERR_SUCCESS;
+}
+
 
 static int  videomode_cb(const sarg_result *res) {
       int bval = 0;
@@ -867,7 +1529,8 @@ static int  ov7670_whitebalance_cb(const sarg_result *res) {
 
 const static sarg_opt my_opts[] = {
     {"h", "help", "show help text", BOOL, help_cb},
-    {"s", "stats", "system stats (0=mem,1=tasks)", INT, sys_stats_cb},
+	 {"s", "stats", "system stats (0=mem,1=tasks)", STRING, sys_stats_cb},
+//    {"s", "stats", "system stats (0=mem,1=tasks)", INT, sys_stats_cb},
     {NULL, "clock", "set camera xclock frequency", INT, ov7670_xclck_cb},
     {NULL, "pixformat", "set pixel format (yuv422, rgb565)", STRING, ov7670_pixformat_cb},
     {NULL, "framerate", "set framerate (14,15,25,30)", INT, ov7670_framerate_cb},
@@ -971,15 +1634,8 @@ uint8_t getHexVal(char c)
 }
 
 static void recvData(uint8_t *buffer, size_t size) {
-//  char cmdRecptMessage[100];
-  int length = 0;
   ESP_LOGD(TAG, "We received: %.*s", size, buffer);
   handle_command(buffer, size);
-  // have to wait for callback for actual response.. echo recpt for now
-//  length += sprintf(cmdRecptMessage, "%s","#: ");
-//  if (strlen(telnet_cmd_response_buff) > 0)
-//    sprintf(cmdRecptMessage+length, "%s\n", telnet_cmd_response_buff);
-//  telnet_esp32_sendData((uint8_t *)cmdRecptMessage, strlen(cmdRecptMessage));
 }
 
 static void telnetTask(void *data) {
@@ -1021,43 +1677,46 @@ static void convert_yuv_line_to_565(uint8_t *srcline, uint8_t *destline, int byt
 }
 */
 
-static void convert_fb32bit_line_to_bmp565(uint32_t *srcline, uint8_t *destline, const camera_pixelformat_t format) {
+// flip image
 
-  uint16_t pixel565 = 0;
-  uint16_t pixel565_2 = 0;
-  uint32_t long2px = 0;
-  uint16_t *sptr;
-  int current_src_pos=0, current_dest_pos=0;
-  for (int current_pixel_pos = 0; current_pixel_pos < 320; current_pixel_pos += 2)
-  {
+void convert_fb32bit_line_to_bmp565( uint32_t *srcline, uint8_t *destline, const int width, const camera_pixelformat_t format )
+{
+   uint16_t pixel565 = 0;
+   uint16_t pixel565_2 = 0;
+   uint32_t long2px = 0;
+   uint16_t *dptr;
+   int current_src_pos = 0;
+   int current_dest_pos = width*2;
+
+   for( int current_pixel_pos = 0; current_pixel_pos < width; current_pixel_pos += 2 )
+   {
     current_src_pos = current_pixel_pos/2;
     long2px = srcline[current_src_pos];
-    if (format == CAMERA_PF_YUV422) {
+
+      if( format == CAMERA_PF_YUV422 )
+      {
         uint8_t y1, y2, u, v;
         y1 = unpack(0,long2px);
-        v = unpack(1,long2px);;
+         u  = unpack( 1, long2px );;
         y2 = unpack(2,long2px);
-        u = unpack(3,long2px);
+         v  = unpack( 3, long2px );
 
         pixel565 = fast_yuv_to_rgb565(y1,u,v);
         pixel565_2 = fast_yuv_to_rgb565(y2,u,v);
 
-        sptr = &destline[current_dest_pos];
-        *sptr = pixel565;
-        sptr = &destline[current_dest_pos+2];
-        *sptr = pixel565_2;
-        current_dest_pos += 4;
+      }
+      else if( format == CAMERA_PF_RGB565 )
+      {
+         pixel565   = ( unpack( 0, long2px ) << 8 ) | unpack( 1, long2px );
+         pixel565_2 = ( unpack( 2, long2px ) << 8 ) | unpack( 3, long2px );
+      }
 
-    } else if (format == CAMERA_PF_RGB565) {
-      pixel565 =  (unpack(2,long2px) << 8) | unpack(3,long2px);
-      pixel565_2 = (unpack(0,long2px) << 8) | unpack(1,long2px);
-
-      sptr = &destline[current_dest_pos];
-      *sptr = pixel565;
-      sptr = &destline[current_dest_pos+2];
-      *sptr = pixel565_2;
-      current_dest_pos += 4;
-    }
+      current_dest_pos -= 2;
+      dptr = ( uint16_t * )&destline[current_dest_pos];
+      *dptr = pixel565;
+      current_dest_pos -= 2;
+      dptr = ( uint16_t * )&destline[current_dest_pos];
+      *dptr = pixel565_2;
   }
 }
 
@@ -1117,143 +1776,239 @@ static void http_server_netconn_serve(struct netconn *conn)
                     //spi_lcd_send();
                     //spi_lcd_wait_finish();
 
-                    if (err != ESP_OK) {
-                        ESP_LOGD(TAG, "Camera capture failed with error = %d", err);
-                    } else {
-                        ESP_LOGD(TAG, "Done");
-                        //stream an image..
-                        if((s_pixel_format == CAMERA_PF_RGB565) || (s_pixel_format == CAMERA_PF_YUV422)) {
-                            // write mime boundary start
-                            err = netconn_write(conn, http_bitmap_hdr, sizeof(http_bitmap_hdr) - 1,
-                                NETCONN_NOCOPY);
-                            // write bitmap header
-                            char *bmp = bmp_create_header565(camera_get_fb_width(), camera_get_fb_height());
-                            err = netconn_write(conn, bmp, sizeof(bitmap565), NETCONN_NOCOPY);
-                            free(bmp);
-                            // convert framebuffer on the fly...
-                            // only rgb and yuv...
-                            uint8_t s_line[320*2];
-                            uint32_t *fbl;
-                            for (int i = 0; i < 240; i++) {
-                              fbl = &currFbPtr[(i*320)/2];  //(i*(320*2)/4); // 4 bytes for each 2 pixel / 2 byte read..
-                              convert_fb32bit_line_to_bmp565(fbl, s_line,s_pixel_format);
-                              err = netconn_write(conn, s_line, 320*2,
-                                            NETCONN_COPY);
-                            }
-                        }
-                        else { // stream jpeg
-                            err = netconn_write(conn, http_jpg_hdr, sizeof(http_jpg_hdr) - 1,
-                                NETCONN_NOCOPY);
-                            if(err == ERR_OK)
-                              err = netconn_write(conn, camera_get_fb(), camera_get_data_size(),
-                                              NETCONN_COPY);
-                        }
-                        if(err == ERR_OK)
-                        {
-                            //Send boundary to next jpeg
-                            err = netconn_write(conn, http_stream_boundary,
-                                    sizeof(http_stream_boundary) -1, NETCONN_NOCOPY);
-                        }
-                        vTaskDelay(30 / portTICK_RATE_MS);
-                    }
-                }
-                ESP_LOGD(TAG, "Stream ended.");
-                ESP_LOGI(TAG, "task stack: %d", uxTaskGetStackHighWaterMark(NULL));
-            } else {
-                if (s_pixel_format == CAMERA_PF_JPEG) {
-                    netconn_write(conn, http_jpg_hdr, sizeof(http_jpg_hdr) - 1, NETCONN_NOCOPY);
-                } else if (s_pixel_format == CAMERA_PF_GRAYSCALE) {
-                    netconn_write(conn, http_pgm_hdr, sizeof(http_pgm_hdr) - 1, NETCONN_NOCOPY);
-                    if (memcmp(&buf[5], "pgm", 3) == 0) {
-                        char pgm_header[32];
-                        snprintf(pgm_header, sizeof(pgm_header), "P5 %d %d %d\n", camera_get_fb_width(), camera_get_fb_height(), 255);
-                        netconn_write(conn, pgm_header, strlen(pgm_header), NETCONN_COPY);
-                    }
-                    else {
-                      char outstr[120];
-                      get_image_mime_info_str(outstr);
-                      netconn_write(conn, outstr, sizeof(outstr) - 1, NETCONN_NOCOPY);
-                      //netconn_write(conn, http_yuv422_hdr, sizeof(http_yuv422_hdr) - 1, NETCONN_NOCOPY);
-                    }
-                } else
-                 if (s_pixel_format == CAMERA_PF_RGB565) {
-                    netconn_write(conn, http_bitmap_hdr, sizeof(http_bitmap_hdr) - 1, NETCONN_NOCOPY);
-                    if (memcmp(&buf[5], "bmp", 3) == 0) {
-                        char *bmp = bmp_create_header565(camera_get_fb_width(), camera_get_fb_height());
-                        err = netconn_write(conn, bmp, sizeof(bitmap565), NETCONN_COPY);
-                        free(bmp);
-                    }
-                    else {
-                      char outstr[120];
-                      get_image_mime_info_str(outstr);
-                      netconn_write(conn, outstr, sizeof(outstr) - 1, NETCONN_NOCOPY);
-                      //netconn_write(conn, http_yuv422_hdr, sizeof(http_yuv422_hdr) - 1, NETCONN_NOCOPY);
-                    }
-                } else if (s_pixel_format == CAMERA_PF_YUV422) {
-                  if (memcmp(&buf[5], "bmp", 3) == 0) {
-                      //PAUSE_DISPLAY = true;
-                      // send YUV converted to 565 2bpp for now...
-                      netconn_write(conn, http_bitmap_hdr, sizeof(http_bitmap_hdr) - 1, NETCONN_NOCOPY);
-                      char *bmp = bmp_create_header565(camera_get_fb_width(), camera_get_fb_height());
-                      err = netconn_write(conn, bmp, sizeof(bitmap565), NETCONN_COPY);
-                      free(bmp);
-                  } else {
-                    char outstr[120];
-                    get_image_mime_info_str(outstr);
-                    netconn_write(conn, outstr, sizeof(outstr) - 1, NETCONN_NOCOPY);
-                    //netconn_write(conn, http_yuv422_hdr, sizeof(http_yuv422_hdr) - 1, NETCONN_NOCOPY);
+               if( err != ESP_OK )
+               {
+                  ESP_LOGD( TAG, "Camera capture failed with error = %d", err );
+               }
+               else
+               {
+                  ESP_LOGD( TAG, "Done" );
+                  // stream an image..
+                  if( ( s_pixel_format == CAMERA_PF_RGB565 ) || ( s_pixel_format == CAMERA_PF_YUV422 ) )
+                  {
+                     // write mime boundary start
+                     err = netconn_write( conn, http_bitmap_hdr, sizeof( http_bitmap_hdr ) - 1,
+                                          NETCONN_NOCOPY );
+                     // write bitmap header
+                     int width = camera_get_fb_width();
+                     int height = camera_get_fb_height();
+                     int bytes_per_pixel = 2;
+
+                     char *bmp = bmp_create_header565( width, height );
+                     err = netconn_write( conn, bmp, sizeof( bitmap565 ), NETCONN_NOCOPY );
+                     free( bmp );
+                     // convert framebuffer on the fly...
+                     // only rgb and yuv...
+                     uint8_t *s_line = ( uint8_t * )malloc( width * bytes_per_pixel );
+                     uint32_t *fbl;     // address of current line/row in framebuffer
+                     fb_context_t fbc_http_server;
+
+                     for( int y = 0; y < height; y++ )
+                     {
+                        int current_pixel_pos = y * width;
+                        fbl = ( uint32_t* )framebuffer_pos( &fbc_http_server, current_pixel_pos );
+
+                        convert_fb32bit_line_to_bmp565( fbl, s_line, width, s_pixel_format );
+                        err = netconn_write( conn, s_line, width * bytes_per_pixel,
+                                             NETCONN_COPY );
+                     }
+                     free( s_line );
                   }
-                } else {
-                  char outstr[120];
-                  get_image_mime_info_str(outstr);
-                  netconn_write(conn, outstr, sizeof(outstr) - 1, NETCONN_NOCOPY);
-                }
-                // handle non streaming images (http../get and http:../bmp )
+                  else   // stream jpeg
+                  {
+                     err = netconn_write( conn, http_jpg_hdr, sizeof( http_jpg_hdr ) - 1,
+                                          NETCONN_NOCOPY );
+                     if( err == ERR_OK )
+                     {
+                        int size = camera_get_data_size();
+                        int bytes_per_pixel = 2;
+                        int bytes_in_line = camera_get_fb_width() * bytes_per_pixel;
+                        int current_pixel_pos = 0;
 
-                  ESP_LOGD(TAG, "Image requested.");
-                  //ESP_LOGI(TAG, "task stack: %d", uxTaskGetStackHighWaterMark(NULL));
+                        uint32_t *fbl;     // address of current line/row in framebuffer
+                        fb_context_t fbc_http_server;
 
-                  bool s_moviemode = is_moviemode_on();
-                  set_moviemode(false);
-                  capture_request();
-                  capture_wait_finish();
-                  set_moviemode(s_moviemode);
+                        while( size > 0 && err == ERR_OK )
+                        {
+                           fbl = ( uint32_t* )framebuffer_pos( &fbc_http_server, current_pixel_pos );
 
-                  //ESP_LOGI(TAG, "task stack: %d", uxTaskGetStackHighWaterMark(NULL));
+                           err = netconn_write( conn, fbl, size % bytes_in_line,
+                                                NETCONN_COPY );
 
-                  if (err != ESP_OK) {
-                      ESP_LOGD(TAG, "Camera capture failed with error = %d", err);
-                  } else {
-                      ESP_LOGD(TAG, "Done");
-                      //ESP_LOGI(TAG, "task stack: %d", uxTaskGetStackHighWaterMark(NULL));
-                      //Send jpeg
-                      if ((s_pixel_format == CAMERA_PF_RGB565) || (s_pixel_format == CAMERA_PF_YUV422)) {
-                        ESP_LOGD(TAG, "Converting framebuffer to RGB565 requested, sending...");
-                        uint8_t s_line[320*2];
-                        uint32_t *fbl;
-                        for (int i = 0; i < 240; i++) {
-                          fbl = &currFbPtr[(i*320)/2];  //(i*(320*2)/4); // 4 bytes for each 2 pixel / 2 byte read..
-                          convert_fb32bit_line_to_bmp565(fbl, s_line,s_pixel_format);
-                          err = netconn_write(conn, s_line, 320*2,
-                                        NETCONN_COPY);
+                           current_pixel_pos += bytes_in_line;
+                           size -= bytes_in_line;
                         }
-                    //    ESP_LOGI(TAG, "task stack: %d", uxTaskGetStackHighWaterMark(NULL));
-
-                      } else
-                        err = netconn_write(conn, camera_get_fb(), camera_get_data_size(),
-                          NETCONN_NOCOPY);
-                  } // handle .bmp and std gets...
-
+                     }
+                  }
+                  if( err == ERR_OK )
+                  {
+                     //Send boundary to next jpeg
+                     err = netconn_write( conn, http_stream_boundary,
+                                          sizeof( http_stream_boundary ) - 1, NETCONN_NOCOPY );
+                  }
+                  vTaskDelay( 30 / portTICK_RATE_MS );
+               }
             }
-        // end GET request:
-        set_moviemode(s_moviemode);
-        }
-    }
-    /* Close the connection (server closes in HTTP) */
-    netconn_close(conn);
-    /* Delete the buffer (netconn_recv gives us ownership,
-     so we have to make sure to deallocate the buffer) */
-    netbuf_delete(inbuf);
+            ESP_LOGD( TAG, "Stream ended." );
+            ESP_LOGI( TAG, "task stack: %d", uxTaskGetStackHighWaterMark( NULL ) );
+         }
+         else
+         {
+            if( s_pixel_format == CAMERA_PF_JPEG )
+            {
+               netconn_write( conn, http_jpg_hdr, sizeof( http_jpg_hdr ) - 1, NETCONN_NOCOPY );
+            }
+            else if( s_pixel_format == CAMERA_PF_GRAYSCALE )
+            {
+               netconn_write( conn, http_pgm_hdr, sizeof( http_pgm_hdr ) - 1, NETCONN_NOCOPY );
+               if( memcmp( &buf[5], "pgm", 3 ) == 0 )
+               {
+                  char pgm_header[32];
+                  snprintf( pgm_header, sizeof( pgm_header ), "P5 %d %d %d\n", camera_get_fb_width(), camera_get_fb_height(), 255 );
+                  netconn_write( conn, pgm_header, strlen( pgm_header ), NETCONN_COPY );
+               }
+               else
+               {
+                  char outstr[120];
+                  get_image_mime_info_str( outstr );
+                  netconn_write( conn, outstr, sizeof( outstr ) - 1, NETCONN_NOCOPY );
+                  //netconn_write(conn, http_yuv422_hdr, sizeof(http_yuv422_hdr) - 1, NETCONN_NOCOPY);
+               }
+            }
+            else if( s_pixel_format == CAMERA_PF_RGB565 )
+            {
+               netconn_write( conn, http_bitmap_hdr, sizeof( http_bitmap_hdr ) - 1, NETCONN_NOCOPY );
+               if( memcmp( &buf[5], "bmp", 3 ) == 0 )
+               {
+                  char *bmp = bmp_create_header565( camera_get_fb_width(), camera_get_fb_height() );
+                  err = netconn_write( conn, bmp, sizeof( bitmap565 ), NETCONN_COPY );
+                  free( bmp );
+               }
+               else
+               {
+                  char outstr[120];
+                  get_image_mime_info_str( outstr );
+                  netconn_write( conn, outstr, sizeof( outstr ) - 1, NETCONN_NOCOPY );
+                  //netconn_write(conn, http_yuv422_hdr, sizeof(http_yuv422_hdr) - 1, NETCONN_NOCOPY);
+               }
+            }
+            else if( s_pixel_format == CAMERA_PF_YUV422 )
+            {
+               if( memcmp( &buf[5], "bmp", 3 ) == 0 )
+               {
+                  //PAUSE_DISPLAY = true;
+                  // send YUV converted to 565 2bpp for now...
+                  netconn_write( conn, http_bitmap_hdr, sizeof( http_bitmap_hdr ) - 1, NETCONN_NOCOPY );
+                  char *bmp = bmp_create_header565( camera_get_fb_width(), camera_get_fb_height() );
+                  err = netconn_write( conn, bmp, sizeof( bitmap565 ), NETCONN_COPY );
+                  free( bmp );
+               }
+               else
+               {
+                  char outstr[120];
+                  get_image_mime_info_str( outstr );
+                  netconn_write( conn, outstr, sizeof( outstr ) - 1, NETCONN_NOCOPY );
+                  //netconn_write(conn, http_yuv422_hdr, sizeof(http_yuv422_hdr) - 1, NETCONN_NOCOPY);
+               }
+            }
+            else
+            {
+               char outstr[120];
+               get_image_mime_info_str( outstr );
+               netconn_write( conn, outstr, sizeof( outstr ) - 1, NETCONN_NOCOPY );
+            }
+            // handle non streaming images (http../get and http:../bmp )
+
+            ESP_LOGD( TAG, "Image requested." );
+            //ESP_LOGI(TAG, "task stack: %d", uxTaskGetStackHighWaterMark(NULL));
+
+            // debug display will just send the current framebuffer
+            if (!debugDisplay) {
+				bool s_moviemode = is_moviemode_on();
+				set_moviemode( false );
+				capture_request();
+				capture_wait_finish();
+				set_moviemode( s_moviemode );
+            }
+            //ESP_LOGI(TAG, "task stack: %d", uxTaskGetStackHighWaterMark(NULL));
+
+            if( err != ESP_OK )
+            {
+               ESP_LOGD( TAG, "Camera capture failed with error = %d", err );
+            }
+            else
+            {
+               ESP_LOGD( TAG, "Done" );
+               //ESP_LOGI(TAG, "task stack: %d", uxTaskGetStackHighWaterMark(NULL));
+               //Send jpeg
+               if( ( s_pixel_format == CAMERA_PF_RGB565 ) || ( s_pixel_format == CAMERA_PF_YUV422 ) )
+               {
+                  ESP_LOGD( TAG, "Converting framebuffer to RGB565 requested, sending..." );
+
+                  int width = camera_get_fb_width();
+                  int height = camera_get_fb_height();
+                  int bytes_per_pixel = 2;
+
+                  uint8_t *s_line = ( uint8_t * )malloc( width * bytes_per_pixel );
+                  uint32_t *fbl;     // address of current line/row in framebuffer
+                  fb_context_t fbc_http_server;
+
+                  for( int y = 0; y < height; y++ )
+                  {
+                     int current_pixel_pos = y * width;
+                     fbl = ( uint32_t* )framebuffer_pos( &fbc_http_server, current_pixel_pos );
+
+                     convert_fb32bit_line_to_bmp565( fbl, s_line, width, s_pixel_format );
+                     err = netconn_write( conn, s_line, width * bytes_per_pixel,
+                                          NETCONN_COPY );
+                     if( err != ERR_OK )
+                     {
+                        ESP_LOGD( TAG, "Error on send line %d = 0x%02x", y, err );
+                        break;
+                     }
+                  }
+                  free( s_line );
+               }
+               else
+               {
+                  // send jpeg
+                  int size = camera_get_data_size();
+                  int bytes_per_pixel = 2;
+                  int bytes_in_line = camera_get_fb_width() * bytes_per_pixel;
+                  int current_pixel_pos = 0;
+
+                  uint32_t *fbl;     // address of current line/row in framebuffer
+                  fb_context_t fbc_http_server;
+
+                  while( size > 0 && err == ERR_OK )
+                  {
+                     fbl = ( uint32_t* )framebuffer_pos( &fbc_http_server, current_pixel_pos );
+
+                     err = netconn_write( conn, fbl, size % bytes_in_line,
+                                          NETCONN_COPY );
+
+                     current_pixel_pos += bytes_in_line;
+                     size -= bytes_in_line;
+
+                     if( err != ERR_OK )
+                     {
+                        ESP_LOGD( TAG, "Error on send line, remains %d bytes = 0x%02x", size, err );
+                        break;
+                     }
+                  }
+               }
+            } // handle .bmp and std gets...
+
+         }
+         // end GET request:
+         set_moviemode( s_moviemode );
+      }
+   }
+   /* Close the connection (server closes in HTTP) */
+   netconn_close( conn );
+   /* Delete the buffer (netconn_recv gives us ownership,
+    so we have to make sure to deallocate the buffer) */
+   netbuf_delete( inbuf );
 }
 
 static void http_server(void *pvParameters)
@@ -1292,6 +2047,23 @@ static spi_device_interface_config_t devcfg={
     .pre_cb=ili_spi_pre_transfer_callback,  //Specify pre-transfer callback to handle D/C line
 };
 
+
+
+
+
+
+
+
+
+#define NVS_SETUP_STARTUP_DELAY 500
+#define WIFI_TASK_STARTUP_DELAY 1000
+#define CAM_CFG_TASK_STARTUP_DELAY 1000
+#define CAPTURE_TASK_STARTUP_DELAY 1000
+#define FRAMEBUFFER_TASK_STARTUP_DELAY 1000
+#define FLASHSCREEN_TASK_STARTUP_DELAY 1000
+#define TELNET_TASK_STARTUP_DELAY 1000
+#define HTTP_TASK_STARTUP_DELAY 1000
+
 void app_main()
 {
     size_t free8start, free32start, free8, free32;
@@ -1299,13 +2071,10 @@ void app_main()
     esp_log_level_set("wifi", ESP_LOG_WARN);
     esp_log_level_set("gpio", ESP_LOG_WARN);
 
-    ESP_LOGI(TAG, "Allocating Frame Buffer memory...");
-    currFbPtr=pvPortMallocCaps(320*240*2, MALLOC_CAP_32BIT);
-    vTaskDelay(1000 / portTICK_RATE_MS);
     ESP_LOGI(TAG,"Starting nvs_flash_init");
     nvs_flash_init();
 
-    vTaskDelay(3000 / portTICK_RATE_MS);
+    vTaskDelay(NVS_SETUP_STARTUP_DELAY / portTICK_RATE_MS);
 
     ESP_LOGI(TAG,"Starting ESPILICAM");
     ESP_LOGI(TAG, "Free heap: %u", xPortGetFreeHeapSize());
@@ -1314,7 +2083,7 @@ void app_main()
 
     // VERY UNSTABLE without this delay after init'ing wifi...
     // however, much more stable with a new Power Supply
-    vTaskDelay(5000 / portTICK_RATE_MS);
+    vTaskDelay(WIFI_TASK_STARTUP_DELAY / portTICK_RATE_MS);
 
     ESP_LOGI(TAG, "Wifi Initialized...");
     ESP_LOGI(TAG, "Free heap: %u", xPortGetFreeHeapSize());
@@ -1360,24 +2129,16 @@ void app_main()
         return;
     }
 
-#ifdef ESPIDFV21RC
-    free8=xPortGetFreeHeapSizeCaps(MALLOC_CAP_8BIT);
-    free32=xPortGetFreeHeapSizeCaps(MALLOC_CAP_32BIT);
-    free8start=xPortGetMinimumEverFreeHeapSizeCaps(MALLOC_CAP_8BIT);
-    free32start=xPortGetMinimumEverFreeHeapSizeCaps(MALLOC_CAP_32BIT);
-#else
-    free32=heap_caps_get_largest_free_block(MALLOC_CAP_32BIT);
-    free8=heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
-    free8start=heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT);
-    free32start=heap_caps_get_minimum_free_size(MALLOC_CAP_32BIT);
-#endif
+   free32 = heap_caps_get_largest_free_block( MALLOC_CAP_32BIT );
+   free8 = heap_caps_get_largest_free_block( MALLOC_CAP_8BIT );
+   free8start = heap_caps_get_minimum_free_size( MALLOC_CAP_8BIT );
+   free32start = heap_caps_get_minimum_free_size( MALLOC_CAP_32BIT );
 
     ESP_LOGI(TAG, "Free heap: %u", xPortGetFreeHeapSize());
     ESP_LOGI(TAG, "Free (largest free blocks) 8bit-capable memory : %dK, 32-bit capable memory %dK\n", free8, free32);
     ESP_LOGI(TAG, "Free (min free size) 8bit-capable memory : %dK, 32-bit capable memory %dK\n", free8start, free32start);
 
 
-    config.displayBuffer = currFbPtr;
     config.pixel_format = s_pixel_format;
     err = camera_init(&config);
     if (err != ESP_OK) {
@@ -1385,7 +2146,7 @@ void app_main()
         return;
     }
 
-    vTaskDelay(2000 / portTICK_RATE_MS);
+    vTaskDelay(CAM_CFG_TASK_STARTUP_DELAY / portTICK_RATE_MS);
 
     dispSem=xSemaphoreCreateBinary();
     dispDoneSem=xSemaphoreCreateBinary();
@@ -1394,6 +2155,13 @@ void app_main()
     xSemaphoreGive(dispDoneSem);
     ESP_LOGD(TAG, "Starting ILI9341 display task...");
     xTaskCreatePinnedToCore(&push_framebuffer_to_tft, "push_framebuffer_to_tft", 4096, NULL, 5, NULL,1);
+ //   xSemaphoreGive(dispSem);
+    setupInitialGraphics();
+ //   displayHelpScreen();
+    xSemaphoreGive(dispSem);
+    ESP_LOGD(TAG, "Help screen init...");
+    vTaskDelay(FLASHSCREEN_TASK_STARTUP_DELAY / portTICK_RATE_MS);
+
 
     captureSem=xSemaphoreCreateBinary();
     captureDoneSem=xSemaphoreCreateBinary();
@@ -1401,7 +2169,7 @@ void app_main()
     ESP_LOGD(TAG, "Starting OV7670 capture task...");
     xTaskCreatePinnedToCore(&captureTask, "captureTask", 2048, NULL, 5, NULL,1);
 
-    vTaskDelay(1000 / portTICK_RATE_MS);
+    vTaskDelay(CAPTURE_TASK_STARTUP_DELAY / portTICK_RATE_MS);
 
     ESP_LOGD(TAG, "Starting http_server task...");
     // keep an eye on stack... 5784 min with 8048 stck size last count..
@@ -1413,21 +2181,14 @@ void app_main()
 
     ESP_LOGD(TAG, "Starting telnetd task...");
     // keep an eye on this - stack free was at 4620 at min with 8048
-    xTaskCreatePinnedToCore(&telnetTask, "telnetTask", 5120, NULL, 5, NULL, 1);
+    xTaskCreatePinnedToCore(&telnetTask, "telnetTask", 8048, NULL, 5, NULL, 1); //5120, NULL, 5, NULL, 1);
 
     ESP_LOGI(TAG, "telnet to \"telnet " IPSTR "\" to access command console, type \"help\" for commands", IP2STR(&s_ip_addr));
 
-    #ifdef ESPIDFV21RC
-        free8=xPortGetFreeHeapSizeCaps(MALLOC_CAP_8BIT);
-        free32=xPortGetFreeHeapSizeCaps(MALLOC_CAP_32BIT);
-        free8start=xPortGetMinimumEverFreeHeapSizeCaps(MALLOC_CAP_8BIT);
-        free32start=xPortGetMinimumEverFreeHeapSizeCaps(MALLOC_CAP_32BIT);
-    #else
-        free32=heap_caps_get_largest_free_block(MALLOC_CAP_32BIT);
-        free8=heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
-        free8start=heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT);
-        free32start=heap_caps_get_minimum_free_size(MALLOC_CAP_32BIT);
-    #endif
+   free32 = heap_caps_get_largest_free_block( MALLOC_CAP_32BIT );
+   free8 = heap_caps_get_largest_free_block( MALLOC_CAP_8BIT );
+   free8start = heap_caps_get_minimum_free_size( MALLOC_CAP_8BIT );
+   free32start = heap_caps_get_minimum_free_size( MALLOC_CAP_32BIT );
 
     ESP_LOGI(TAG, "Free heap: %u", xPortGetFreeHeapSize());
     ESP_LOGI(TAG, "Free (largest free blocks) 8bit-capable memory : %dK, 32-bit capable memory %dK\n", free8, free32);

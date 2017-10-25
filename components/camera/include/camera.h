@@ -115,14 +115,6 @@ esp_err_t camera_probe(const camera_config_t* config, camera_model_t* out_camera
 esp_err_t camera_init(const camera_config_t* config);
 
 /**
- * @brief Obtain the pointer to framebuffer allocated by camera_init function.
- *
- * @return pointer to framebuffer
- */
-//uint8_t* camera_get_fb();
-uint32_t* camera_get_fb();
-
-/**
  * @brief Return the size of valid data in the framebuffer
  *
  * For grayscale mode, this function returns width * height of the framebuffer.
