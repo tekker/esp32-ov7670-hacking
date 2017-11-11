@@ -14,6 +14,24 @@
 #define BI_RLE4      2             /* 4-bit run-length compression */
 #define BI_BITFIELDS 3             /* RGB bitmap with RGB masks */
 
+/* MSDN BITMAP
+
+typedef struct tagBITMAPINFOHEADER {
+  DWORD biSize;
+  LONG  biWidth;
+  LONG  biHeight;
+  WORD  biPlanes;
+  WORD  biBitCount;
+  DWORD biCompression;
+  DWORD biSizeImage;
+  LONG  biXPelsPerMeter;
+  LONG  biYPelsPerMeter;
+  DWORD biClrUsed;
+  DWORD biClrImportant;
+} BITMAPINFOHEADER, *PBITMAPINFOHEADER;
+
+ */
+
 typedef struct __attribute__((packed, aligned(1))) {
     uint8_t signature[2];
     uint32_t filesize;
@@ -22,14 +40,16 @@ typedef struct __attribute__((packed, aligned(1))) {
 } fileheader;
 typedef struct __attribute__((packed, aligned(1))) {
     uint32_t dibheadersize;
-    uint32_t width;
-    uint32_t height;
+    //uint32_t width;
+    //uint32_t height; // allow for -ve height to indicate upside-down bitmap
+    int32_t width;
+    int32_t height;
     uint16_t planes;
     uint16_t bitsperpixel;
     uint32_t compression;
     uint32_t imagesize;
-    uint32_t ypixelpermeter;
-    uint32_t xpixelpermeter;
+    int32_t ypixelpermeter;
+    int32_t xpixelpermeter;
     uint32_t numcolorspallette;
     uint32_t mostimpcolor;
 } bitmapinfoheader;
@@ -43,14 +63,14 @@ typedef struct {
 // 16-bit pixel bitmaps append a color table to the standard info header
 typedef struct __attribute__((packed, aligned(1))) {
     uint32_t dibheadersize;
-    uint32_t width;
-    uint32_t height;
+    int32_t width;
+    int32_t height;
     uint16_t planes;
     uint16_t bitsperpixel;
     uint32_t compression;
     uint32_t imagesize;
-    uint32_t ypixelpermeter;
-    uint32_t xpixelpermeter;
+    int32_t ypixelpermeter;
+    int32_t xpixelpermeter;
     uint32_t numcolorspallette;
     uint32_t mostimpcolor;
     uint32_t BF1;  // bitfield rgb mask 1 (g)

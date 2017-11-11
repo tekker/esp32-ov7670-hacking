@@ -15,7 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-//#include <byteswap.h>
+#include <byteswap.h>
 
 #include <stddef.h>
 #include "esp_log.h"
@@ -90,8 +90,8 @@ static void Init_UTFT_GFX_Fonts() {
     cfont.y_size   = 0 ;
     cfont.offset   = 0 ;
     cfont.numchars = 0 ;
-    textcolor      = VGA_WHITE;
-    textbgcolor    = VGA_BLACK;
+    textcolor      = VGA_PURPLE;
+    textbgcolor    = VGA_PURPLE;
 }
 
 static void setFont(uint8_t* font) {
@@ -106,6 +106,9 @@ static uint8_t* getFont()      { return cfont.font ; }
 static uint8_t  getFontXsize() { return cfont.x_size ; }
 static uint8_t  getFontYsize() { return cfont.y_size ; }
 
+// from esp32-nes
+#define U16x2toU32(m,l) ((((uint32_t)(l>>8|(l&0xFF)<<8))<<16)|(m>>8|(m&0xFF)<<8))
+
 
 // 32-bit aligned byte array update with dual 16-bit elements
 static inline uint32_t IRAM_ATTR update_pixels(uint32_t px2x_pixels, uint16_t pos0pixel, uint16_t pos1pixel, bool drawPos0, bool drawPos1) {
@@ -113,10 +116,12 @@ static inline uint32_t IRAM_ATTR update_pixels(uint32_t px2x_pixels, uint16_t po
 	uint16_t *pixels16 = (uint16_t*)&newPixels[0];
 
 	if (drawPos0) {
-		pixels16[0] = pos0pixel;
+		//pixels16[0] = pos0pixel;// pos0pixel;
+		pixels16[0] = __bswap_16(pos0pixel);// pos0pixel;
 	}
 	if (drawPos1) {
-		pixels16[1] = pos1pixel;
+		//pixels16[1] = pos1pixel;
+		pixels16[1] = __bswap_16(pos1pixel);
 	}
 	return px2x_pixels;
 }
@@ -139,16 +144,37 @@ static inline void IRAM_ATTR plot_pixel_in_fb(uint16_t x, uint16_t y, uint16_t c
 		ESP_LOGI(GFX_TAG,"Call  framebuffer_pos %d for %d,%d",current_pixel_pos,x,y);
 
 	uint32_t *fbl_i = NULL;
+
+
+/*
 	for (int z = 0; z <= current_pixel_pos; z = z + width)  {
 		if (gfx_debugDisplay == 1)
 		  ESP_LOGI(GFX_TAG,"Scanning  framebuffer_pos (%d - %d)",z,current_pixel_pos);
-	    fbl_i = ( uint32_t* )framebuffer_pos( &fbc_display, z );
+
+
+		fbl_i = ( uint32_t* )framebuffer_pos_32( &fbc_display, z );
+	    if (fbl_i == NULL) ESP_LOGI(GFX_TAG,"NULL from fb_pos!!");
+	    return;
 	}
-	if (x % 1) xmod = 1; 	// ie, x = 1... we must wind back to 0
+*/
+
+	fbl_i = ( uint32_t* )framebuffer_pos_32( &fbc_display, current_pixel_pos );
+	if (fbl_i == NULL) {
+		ESP_LOGI(GFX_TAG,"NULL from fb_pos for %d",current_pixel_pos);
+		return;
+	}
+
+	//if ((x % 2) || (x==0))
+	if ((x % 2) == 0)
+		xmod = 0;
+	else
+		xmod = 1; // ie, x = 1... we must wind back to 0
+
+	//if (x & 1) xmod = 1;
 	current_line_pos = ((x-xmod)) % width ;
 	current_byte_pos = current_line_pos / 2;
 
-	//if (y > 200)
+
 	if (gfx_debugDisplay == 1)
 	ESP_LOGI(GFX_TAG,"Access fbl %d at pos for %d for %d,%d",current_pixel_pos,current_byte_pos,x,y);
 
@@ -219,6 +245,191 @@ static inline void IRAM_ATTR drawPixelF( uint16_t xpos, uint16_t ypos, uint16_t 
 	plot_pixel_in_fb(xpos,ypos,color);
 
 }
+
+// low-level drawing of shapes as needed... draw lines etc...
+// as needed..
+
+#define ABS(x)	(x < 0 ? -x : x)
+#define SIGN(x)	(x < 0 ? -1 : (x > 0 ? 1 : 0))
+
+static void DrawLine(int x1,int y1,int x2,int y2, uint16_t color)
+{
+	int	dx,dy,sx,sy;
+	int	accum;
+
+	dx = x2 - x1;
+	dy = y2 - y1;
+
+	sx = SIGN(dx);
+	sy = SIGN(dy);
+
+	dx = ABS(dx);
+	dy = ABS(dy);
+
+	x2 += sx;
+	y2 += sy;
+
+	if(dx > dy)
+	{
+		accum = dx >> 1;
+		do{
+			drawPixelF(x1,y1,color);
+
+			accum -= dy;
+			if(accum < 0)
+			{
+				accum += dx;
+				y1 += sy;
+			}
+
+			x1 += sx;
+		}while(x1 != x2);
+	}else{
+		accum = dy >> 1;
+		do{
+			drawPixelF(x1,y1,color);
+
+			accum -= dx;
+			if(accum < 0)
+			{
+				accum += dy;
+				x1 += sx;
+			}
+
+			y1 += sy;
+		}while(y1 != y2);
+	}
+}
+
+
+
+static void DrawEllipse(int left,int top,int right,int bottom, uint16_t color)
+{
+	int		a,b;
+	int		x,y,a2,b2,S,T;
+	int		two_a2,two_b2;
+	int		four_a2,four_b2;
+	int		temp;
+
+	if(right < left)
+	{
+		temp = left;
+		left = right;
+		right = temp;
+	}
+	if(bottom < top)
+	{
+		temp = top;
+		top = bottom;
+		bottom = temp;
+	}
+
+	a = (right - left + 1) / 2;
+	b = (bottom - top + 1) / 2;
+
+	if(!a && !b)
+	{
+		drawPixelF(left,top,color); // Draw a single pixel
+		return;
+	}
+
+	if(!b)
+	{
+		DrawLine(top,left,top,right,color); // Draw a horizontal line
+		return;
+	}
+
+	if(!a)
+	{
+		DrawLine(left,top,left,bottom,color); // Draw a vertical line
+		return;
+	}
+
+	a2 = a * a;
+	b2 = b * b;
+	two_a2 = a2 << 1;
+	two_b2 = b2 << 1;
+	four_a2 = a2 << 2;
+	four_b2 = b2 << 2;
+	x = 0;
+	y = b;
+	S = a2 * (1 - (b << 1)) + two_b2;
+	T = b2 - two_a2 * ((b << 1) - 1);
+
+	drawPixelF(right + x - a,bottom + y - b,color);
+	drawPixelF(left - x + a,bottom + y - b,color);
+	drawPixelF(left - x + a,top - y + b,color);
+	drawPixelF(right + x - a,top - y + b,color);
+
+	do{
+		if(S < 0)
+		{
+			S += two_b2 * ((x << 1) + 3);
+			T += four_b2 * (x + 1);
+			x++;
+		}else if(T < 0){
+			S += two_b2 * ((x << 1) + 3) - four_a2 * (y - 1);
+			T += four_b2 * (x + 1) - two_a2 * ((y << 1) - 3);
+			x++;
+			y--;
+		}else{
+			S -= four_a2 * (y - 1);
+			T -= two_a2 * ((y << 1) - 3);
+			y--;
+		}
+		drawPixelF(right + x - a,bottom + y - b,color);
+		drawPixelF(left - x + a,bottom + y - b,color);
+		drawPixelF(left - x + a,top - y + b,color);
+		drawPixelF(right + x - a,top - y + b,color);
+	}while(y > 0);
+}
+
+
+
+void centeredCircle ( int centerX , int centerY , int radius, uint16_t color )
+{
+  int cornerX = centerX - radius;
+  int cornerY = centerY - radius;
+  int diameter = radius * 2;
+  DrawEllipse(cornerX , cornerY ,cornerX+diameter ,cornerY+diameter, color );
+}
+
+
+void bullsEye ( int xCenter , int yCenter , int radiusBullsEye )
+{
+
+  centeredCircle ( xCenter, yCenter, radiusBullsEye, VGA_RED );
+  centeredCircle ( xCenter, yCenter, (int)((2.0/3)*radiusBullsEye),VGA_BLUE);
+  centeredCircle ( xCenter, yCenter, (int)((1.0/3)*radiusBullsEye),VGA_GREEN);
+}
+
+void crossHair ( int xCenter, int yCenter , int radiusCrossHair )
+{
+
+  centeredCircle ( xCenter , yCenter , radiusCrossHair, VGA_BLACK );
+
+  int topX = xCenter;
+  int topY = yCenter - radiusCrossHair;
+  int bottomX = xCenter;
+  int bottomY = yCenter + radiusCrossHair;
+  int rightX = xCenter + radiusCrossHair;
+  int rightY = yCenter;
+  int leftX = xCenter - radiusCrossHair;
+  int leftY = yCenter;
+
+  DrawLine(topX,topY , bottomX,bottomY, VGA_BLACK );
+  DrawLine(leftX,leftY , rightX,rightY, VGA_BLACK );
+  centeredCircle ( xCenter , yCenter , (int) ( radiusCrossHair * ( 1.0/4) ), VGA_BLACK);
+
+  bullsEye(xCenter , yCenter, (int) ( radiusCrossHair * ( 1.0/8) ) );
+}
+
+
+
+
+
+
+
 
 static inline void IRAM_ATTR printFontChar(uint8_t c, int16_t x, int16_t y) {
     if (cfont.font == NULL) return ;
@@ -368,7 +579,7 @@ static void fillRect(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_
     h = -h;
   }
 
-  ESP_LOGI(GFX_TAG,"fillrect for %d,%d,%d,%d",x,y,w,h);
+  //ESP_LOGI(GFX_TAG,"fillrect for %d,%d,%d,%d",x,y,w,h);
 
   for (uint16_t i=0; i<h; i++) {
 
@@ -431,6 +642,8 @@ static inline int printProportionalChar(uint8_t c, int x, int y)
     return fontChar.xDelta;
 }
 
+
+
 static inline void printFont(char* st, int16_t x, int16_t y, int16_t deg) {
     int16_t stl = strlen(st) ;
 
@@ -454,6 +667,40 @@ static inline void printFont(char* st, int16_t x, int16_t y, int16_t deg) {
     }
 }
 
+static inline void printFontCenterHorz(char* st, int16_t y, int16_t deg) {
+	int textWidth = getStringWidth(st);
+	int startX = (ILI_WIDTH/2)-(textWidth/2);
+
+	// TODO: cut off text if too long?
+	if (startX < 0) startX = 0;
+	printFont(st,startX,y,deg);
+
+}
+
+static void drawOverlayGraphics(char* fpsString) {
+	printFont(fpsString,4,4,0);
+
+	int centerX = (ILI_WIDTH/2);
+	int centerY = (ILI_HEIGHT/2);
+
+	crossHair(centerX, centerY, 60);
+
+	/*
+	//printFontCenterHorz("ESP32 ESPILICAM",30,0);
+	char msgStr[20] = "TESTITTETSSTSERTESTTETSTE";
+	int i = 0;
+	for (i = 0; i < strlen(fpsString); i++)
+		msgStr[i] = fpsString[i];
+	msgStr[i++] = "\0";
+	//printFontCenterHorz(msgStr,10,4);
+	printFont(msgStr,4,4,0);
+	//printFont(fpsString,4,4,0);
+	//printFontCenterHorz(fpsString,4,4);
+
+	 */
+}
+
+
 static void displayHelpScreen( void )
 {
    char msgStr[20];
@@ -461,13 +708,16 @@ static void displayHelpScreen( void )
    //memset( frameBuffer, BLACK, 2 * WIDTH * HEIGHT );         /* Clear screen */
 
 
-   fillRect(0,0,320,240,BLACK);
+   //fillRect(0,0,320,240,VGA_BLACK);
 
    static char ip_str[13];
    sprintf(ip_str, IPSTR, IP2STR(&gfx_s_ip_addr));
 
-   printFont("ESP32 ESPILICAM",10,10,0);
-   printFont("OV7670-ILI9341",10,10+getFontYsize(),0);
+   printFontCenterHorz("ESP32 ESPILICAM",10,0);
+   printFontCenterHorz("OV7670-ILI9341",10+getFontYsize(),0);
+   //printFont("ESP32 ESPILICAM",10,10,0);
+   //printFont("OV7670-ILI9341",10,10+getFontYsize(),0);
+
    printFont("command console at:",5,100,0);
    sprintf(msgStr,"telnet %s",ip_str);
    printFont(msgStr,50, 100 + getFontYsize(),0);
@@ -480,7 +730,7 @@ static void displayHelpScreen( void )
 static void setupInitialGraphics() {
   //frameBuffer = (uint16_t*)currFbPtr;
   //memset( frameBuffer, BLACK, 2 * WIDTH * HEIGHT );   /* Clear screen */
-  fillRect(0,0,320,240,VGA_RED);
+  fillRect(0,0,320,240,VGA_WHITE);
   Init_UTFT_GFX_Fonts();
   setFont(&DejaVuSans18);
   int xsize = getFontXsize();

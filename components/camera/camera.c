@@ -865,7 +865,7 @@ static void IRAM_ATTR dma_filter_task(void *pvParameters)
             continue;
         }
 
-      uint32_t* pfb = ( uint32_t* ) framebuffer_pos( &fbc_camera, get_fb_pos() );
+      uint32_t* pfb = ( uint32_t* ) framebuffer_pos_32( &fbc_camera, get_fb_pos() );
         const dma_elem_t* buf = s_state->dma_buf[buf_idx];
         lldesc_t* desc = &s_state->dma_desc[buf_idx];
         ESP_LOGV(TAG, "dma_flt: pos=%d ", get_fb_pos());

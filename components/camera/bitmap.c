@@ -36,8 +36,9 @@ char *bmp_create_header(int w, int h)
 	pbitmap->fileheader.fileoffset_to_pixelarray = sizeof(bitmap);
 	pbitmap->bitmapinfoheader.dibheadersize = sizeof(bitmapinfoheader);
 	pbitmap->bitmapinfoheader.width = w;
-//	pbitmap->bitmapinfoheader.height = (-1)*h; // should be -ve height if written from top to bottom
-  pbitmap->bitmapinfoheader.height = h;
+	pbitmap->bitmapinfoheader.height = (-1)*h; // should be -ve height if written from top to bottom
+//	pbitmap->bitmapinfoheader.width = w;
+//    pbitmap->bitmapinfoheader.height = h;
 	pbitmap->bitmapinfoheader.planes = _planes;
 	pbitmap->bitmapinfoheader.bitsperpixel = _bitsperpixel;
 	pbitmap->bitmapinfoheader.compression = _compression;
@@ -60,9 +61,10 @@ char *bmp_create_header565(int w, int h)
 	pbitmap->fileheader.filesize = _filesize;
 	pbitmap->fileheader.fileoffset_to_pixelarray = sizeof(bitmap565);
 	pbitmap->bitmapinfoheader.dibheadersize = sizeof(bitmapinfoheader);
-	pbitmap->bitmapinfoheader.width = w;
-//	pbitmap->bitmapinfoheader.height = (-1)*h; // should be -ve height if written from top to bottom
-	pbitmap->bitmapinfoheader.height = h;
+	pbitmap->bitmapinfoheader.width =  w;
+	pbitmap->bitmapinfoheader.height = (-1)*h; // should be -ve height if written from top to bottom
+//	pbitmap->bitmapinfoheader.width = w;
+//	pbitmap->bitmapinfoheader.height = h;
 	pbitmap->bitmapinfoheader.planes = _planes;
 	pbitmap->bitmapinfoheader.bitsperpixel = _bitsperpixel;
 	pbitmap->bitmapinfoheader.compression = BI_BITFIELDS;
